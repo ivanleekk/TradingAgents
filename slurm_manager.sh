@@ -229,6 +229,9 @@ check_failed_jobs() {
         fi
     done
 }
+
+# Collect results
+collect_results() {
     local symbol=${1:-"*"}
     local date=${2:-$(date +%Y-%m-%d)}
     
