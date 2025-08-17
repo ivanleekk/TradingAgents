@@ -96,11 +96,7 @@ class TradingAgentsGraph:
                 trust_remote_code=True,
                 tensor_parallel_size=1,
             )
-            self.quick_thinking_llm = VLLM(
-                model=self.config["quick_think_llm"],
-                trust_remote_code=True,
-                tensor_parallel_size=1,
-            )
+            self.quick_thinking_llm = self.deep_thinking_llm
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
 
