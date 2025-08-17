@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=vllm_test
-#SBATCH --output=vllm_test%j.out
-#SBATCH --error=vllm_test%j.err
+#SBATCH --job-name=tradingAgents
+#SBATCH --output=tradingAgents%j.out
+#SBATCH --error=tradingAgents%j.err
 #SBATCH --time=01:00:00
 #SBATCH --partition=gpu
 #SBATCH --ntasks=1
