@@ -6,8 +6,8 @@
 #SBATCH --partition=gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --gpus=h100:1
-#SBATCH --mem=80G
+#SBATCH --gpus=h100-96:1
+#SBATCH --mem=96G
 
 # Run the script
 uv sync
