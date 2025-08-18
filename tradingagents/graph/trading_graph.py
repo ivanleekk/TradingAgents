@@ -10,7 +10,10 @@ from langchain_openai import ChatOpenAI
 from langchain_anthropic import ChatAnthropic
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_ollama import ChatOllama
-from langchain_community.llms import VLLM
+from langchain_community.llms import VLLM, VLLMOpenAI
+import multiprocessing
+
+from langchain_community.chat_models import ChatLlamaCpp
 
 
 from langgraph.prebuilt import ToolNode
@@ -91,16 +94,26 @@ class TradingAgentsGraph:
                 model=self.config["quick_think_llm"]
             )
         elif self.config["llm_provider"].lower() == "vllm":
-            self.deep_thinking_llm = VLLM(
+            self.deep_thinking_llm = VLLMOpenAI(
                 model=self.config["deep_think_llm"],
                 trust_remote_code=True,
                 tensor_parallel_size=1,
             )
-            self.quick_thinking_llm = VLLM(
+            self.quick_thinking_llm = VLLMOpenAI(
                 model=self.config["quick_think_llm"],
                 trust_remote_code=True,
                 tensor_parallel_size=1,
             )
+        elif self.config["llm_provider"].lower() == "llamacpp":
+            self.deep_thinking_llm = ChatLlamaCpp(
+                model_path=self.config["deep_think_llm"],
+                n_ctx=8192,
+                n_batch=512,
+                n_gpu_layers=20,
+                n_threads=multiprocessing.cpu_count() - 1,
+                verbose=True,
+            )
+            self.quick_thinking_llm = self.deep_thinking_llm
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
 
