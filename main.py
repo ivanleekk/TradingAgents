@@ -8,7 +8,7 @@ load_dotenv()
 # Create a custom config
 config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "llamacpp"  # Use a different model
-config["backend_url"] = "http://localhost:8000/v1"  # Use a different backend
+config["backend_url"] = "http://localhost:8080/v1"  # Use a different backend
 config["deep_think_llm"] = (
     "models/Qwen3-4B-Thinking-2507-UD-Q8_K_XL.gguf"  # Use a different model
 )
@@ -22,7 +22,7 @@ config["online_tools"] = True  # Increase debate rounds
 ta = TradingAgentsGraph(debug=True, config=config)
 
 # forward propagate
-_, decision = ta.propagate("SPY", "2024-07-09")
+_, decision = ta.propagate("AAPL", "2025-08-18")
 print(decision)
 
 # Memorize mistakes and reflect

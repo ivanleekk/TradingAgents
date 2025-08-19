@@ -77,7 +77,9 @@ class TradingAgentsGraph:
             )
         elif self.config["llm_provider"].lower() == "ollama":
             self.deep_thinking_llm = ChatOllama(model=self.config["deep_think_llm"])
-            self.quick_thinking_llm = ChatOllama(model=self.config["quick_think_llm"])
+            self.quick_thinking_llm = ChatOllama(
+                model=self.config["quick_think_llm"],
+            )
         elif self.config["llm_provider"].lower() == "anthropic":
             self.deep_thinking_llm = ChatAnthropic(
                 model=self.config["deep_think_llm"], base_url=self.config["backend_url"]
