@@ -10,10 +10,10 @@ config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "llamacpp"  # Use a different model
 config["backend_url"] = "http://localhost:8080/v1"  # Use a different backend
 config["deep_think_llm"] = (
-    "models/Qwen3-4B-Thinking-2507-UD-Q8_K_XL.gguf"  # Use a different model
+    "models/Llama-3.3-70B-Instruct.Q5_K_M.gguf"  # Use a different model
 )
 config["quick_think_llm"] = (
-    "models/Qwen3-4B-Thinking-2507-UD-Q8_K_XL.gguf"  # Use a different model
+    "models/Llama-3.3-70B-Instruct.Q5_K_M.gguf"  # Use a different model
 )
 config["max_debate_rounds"] = 1  # Increase debate rounds
 config["online_tools"] = True  # Increase debate rounds

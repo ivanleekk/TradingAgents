@@ -23,18 +23,18 @@ class FinancialSituationMemory:
             # instantiate the LlamaCpp embeddings wrapper
             self.embeddings_model = LlamaCppEmbeddings(
                 model_path=self.embedding,
-                n_ctx=2048,
+                n_ctx=512,
                 n_parts=-1,
                 seed=0,
                 f16_kv=True,
                 logits_all=False,
                 vocab_only=False,
                 use_mlock=False,
-                n_threads=4,
+                n_threads=16,
                 n_batch=512,
-                n_gpu_layers=0,
+                n_gpu_layers=10,
                 verbose=False,
-                device="cpu",
+                device="cuda",
             )
             self.client = None
         else:

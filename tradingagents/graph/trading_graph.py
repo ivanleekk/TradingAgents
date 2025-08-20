@@ -109,9 +109,9 @@ class TradingAgentsGraph:
         elif self.config["llm_provider"].lower() == "llamacpp":
             self.deep_thinking_llm = ChatLlamaCpp(
                 model_path=self.config["deep_think_llm"],
-                n_ctx=8192,
-                n_batch=512,
-                n_gpu_layers=20,
+                n_ctx=65536,
+                n_batch=1024,
+                n_gpu_layers=80,
                 n_threads=multiprocessing.cpu_count() - 1,
                 verbose=True,
             )
