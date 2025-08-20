@@ -14,6 +14,9 @@ from tqdm import tqdm
 import yfinance as yf
 from openai import OpenAI
 from .config import get_config, set_config, DATA_DIR
+from duckduckgo_search import DDGS
+from newspaper import Article
+from datetime import datetime, timedelta
 
 
 def get_finnhub_news(
@@ -700,6 +703,63 @@ def get_YFin_data(
     filtered_data = filtered_data.reset_index(drop=True)
 
     return filtered_data
+
+
+def get_web_search_results(ticker, start_date, end_date):
+    """
+    Performs a web search for news and articles about a ticker within a date range
+    and extracts the content from the top results.
+    """
+    query = f"{ticker} stock news"
+
+    print(f"Searching the web for: '{query}'")
+
+    # Use DuckDuckGo Search to find relevant articles
+    # The 'time' filter is not perfectly precise but helps narrow down results
+    # For more precision, we filter by date after extracting content
+    results = []
+    with DDGS() as ddgs:
+        results = list(
+            ddgs.news(
+                keywords=query,
+                region="wt-wt",
+                safesearch="off",
+                max_results=10,
+            )
+        )
+
+    if not results:
+        return "Could not find any recent web articles for the ticker."
+
+    print(f"Found {len(results)} potential articles. Now extracting content...")
+
+    # Extract content from each URL and filter by date
+    all_article_text = ""
+    for result in results:
+        try:
+            article = Article(result["url"])
+            article.download()
+            article.parse()
+
+            # Check if the article has a publication date and if it's in our range
+            if article.publish_date:
+                if start_date.date() <= article.publish_date.date() <= end_date.date():
+                    print(f"  -> Processing article: {article.title}")
+                    all_article_text += f"Title: {article.title}\n"
+                    all_article_text += f"Source: {result['source']}\n"
+                    all_article_text += (
+                        f"Content: {article.text[:1000]}...\n\n"  # Get first 1000 chars
+                    )
+        except Exception as e:
+            # Silently ignore articles that fail to download or parse
+            # print(f"Could not process article at {result['url']}: {e}")
+            continue
+
+    return (
+        all_article_text
+        if all_article_text
+        else "No articles found within the specified date range."
+    )
 
 
 def get_stock_news_openai(ticker, curr_date):

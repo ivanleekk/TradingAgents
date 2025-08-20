@@ -19,15 +19,15 @@ def create_msg_delete():
     def delete_messages(state):
         """Clear messages and add placeholder for Anthropic compatibility"""
         messages = state["messages"]
-        
+
         # Remove all messages
         removal_operations = [RemoveMessage(id=m.id) for m in messages]
-        
+
         # Add a minimal placeholder message
         placeholder = HumanMessage(content="Continue")
-        
+
         return {"messages": removal_operations + [placeholder]}
-    
+
     return delete_messages
 
 
@@ -60,7 +60,7 @@ class Toolkit:
         Returns:
             str: A formatted dataframe containing the latest global news from Reddit in the specified time frame.
         """
-        
+
         global_news_result = interface.get_reddit_global_news(curr_date, 7, 5)
 
         return global_news_result
@@ -417,3 +417,35 @@ class Toolkit:
         )
 
         return openai_fundamentals_results
+
+    @staticmethod
+    @tool
+    def get_web_search_news(
+        ticker: Annotated[str, "The company's stock ticker, e.g., 'AAPL', 'NVDA'"],
+        curr_date: Annotated[
+            str,
+            "The date for which to get news, in 'YYYY-MM-DD' format. The search will cover the 7 days prior to this date.",
+        ],
+    ) -> str:
+        """
+        Searches the open web for news articles about a specific stock ticker for the 7 days leading up to a given date.
+        This tool is useful for finding general news, announcements, and analysis from various online sources.
+
+        Args:
+            ticker (str): The stock ticker of the company.
+            curr_date (str): The end date for the news search in 'YYYY-MM-DD' format.
+
+        Returns:
+            str: A formatted string containing the titles, sources, and content summaries of relevant news articles found.
+        """
+
+        # 1. Define the date range
+        end_date = datetime.strptime(curr_date, "%Y-%m-%d")
+        start_date = end_date - timedelta(days=7)
+
+        # 2. Call the interface function to perform the search and extraction
+        web_news_results = interface.get_web_search_results(
+            ticker, start_date, end_date
+        )
+
+        return web_news_results

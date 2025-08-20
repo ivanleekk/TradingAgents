@@ -13,6 +13,10 @@ DEFAULT_CONFIG = {
     "deep_think_llm": "llama3.2",
     "quick_think_llm": "llama3.2",
     "backend_url": "http://localhost:11434",
+    # LlamaCpp tuning (safe defaults, can be overridden in runtime config)
+    "llamacpp_n_ctx": 8192,
+    "llamacpp_n_batch": 512,
+    "llamacpp_n_gpu_layers": 40,
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
