@@ -6,7 +6,7 @@
 #SBATCH --partition=gpu
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --gpus=h100-96:1
+#SBATCH --gpus=h100-96:2
 #SBATCH --mem=700G
 
 # Run the script

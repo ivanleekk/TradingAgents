@@ -107,28 +107,25 @@ class TradingAgentsGraph:
                 tensor_parallel_size=1,
             )
         elif self.config["llm_provider"].lower() == "llamacpp":
-            # Use safer defaults for context/batch sizes to avoid llama.cpp decode errors.
-            # Allow overrides via config keys: llamacpp_n_ctx, llamacpp_n_batch, llamacpp_n_gpu_layers
-            n_ctx = int(self.config.get("llamacpp_n_ctx", 8192))
-            n_batch = int(self.config.get("llamacpp_n_batch", 512))
-            n_gpu_layers = int(self.config.get("llamacpp_n_gpu_layers", 0))
-
             self.deep_thinking_llm = ChatLlamaCpp(
                 model_path=self.config["deep_think_llm"],
-                n_ctx=n_ctx,
-                n_batch=n_batch,
-                n_gpu_layers=n_gpu_layers,
+                n_ctx=self.config["llamacpp_n_ctx"],
+                n_batch=self.config["llamacpp_n_batch"],
+                n_gpu_layers=self.config["llamacpp_n_gpu_layers"],
                 n_threads=max(1, multiprocessing.cpu_count() - 1),
                 verbose=True,
+                max_tokens=self.config["llamacpp_max_tokens"],
             )
             self.quick_thinking_llm = ChatLlamaCpp(
                 model_path=self.config["quick_think_llm"],
-                n_ctx=n_ctx,
-                n_batch=n_batch,
-                n_gpu_layers=n_gpu_layers,
+                n_ctx=self.config["llamacpp_n_ctx"],
+                n_batch=self.config["llamacpp_n_batch"],
+                n_gpu_layers=self.config["llamacpp_n_gpu_layers"],
                 n_threads=max(1, multiprocessing.cpu_count() - 1),
                 verbose=True,
+                max_tokens=self.config["llamacpp_max_tokens"],
             )
+
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
 

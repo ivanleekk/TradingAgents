@@ -9,12 +9,13 @@ load_dotenv()
 config = DEFAULT_CONFIG.copy()
 config["llm_provider"] = "llamacpp"  # Use a different model
 config["backend_url"] = "http://localhost:8080/v1"  # Use a different backend
-config["deep_think_llm"] = "models/gemma-3-4b-it-BF16.gguf"  # Use a different model
-config["quick_think_llm"] = "models/gemma-3-4b-it-BF16.gguf"  # Use a different model
+config["deep_think_llm"] = "models/DeepSeek-R1-Distill-Llama-70B-UD-Q5_K_XL.gguf"  # Use a different model
+config["quick_think_llm"] = "models/DeepSeek-R1-Distill-Llama-70B-UD-Q5_K_XL.gguf"  # Use a different model
 # LlamaCpp tuning to avoid decode errors; override as needed
-config["llamacpp_n_ctx"] = 131072
+config["llamacpp_n_ctx"] = 20000
 config["llamacpp_n_batch"] = 1024
-config["llamacpp_n_gpu_layers"] = 80
+config["llamacpp_n_gpu_layers"] = 81
+config["llamacpp_max_tokens"] = 20000
 config["max_debate_rounds"] = 1  # Increase debate rounds
 config["online_tools"] = True  # Increase debate rounds
 
