@@ -449,3 +449,32 @@ class Toolkit:
         )
 
         return web_news_results
+
+    @staticmethod
+    @tool
+    def get_alpaca_news(
+        ticker: Annotated[str, "The company's stock ticker, e.g., 'AAPL', 'NVDA'"],
+        curr_date: Annotated[
+            str,
+            "The date for which to get news, in 'YYYY-MM-DD' format. The search will cover the 7 days prior to this date.",
+        ],
+    ) -> str:
+        """
+        Searches Alpaca's news API for news articles about a specific stock ticker for the 7 days leading up to a given date.
+        This tool is useful for finding general news, announcements, and analysis from various online sources.
+
+        Args:
+            ticker (str): The stock ticker of the company.
+            curr_date (str): The end date for the news search in 'YYYY-MM-DD' format.
+
+        Returns:
+            str: A formatted string containing the titles, sources, and content summaries of relevant news articles found.
+        """
+
+        # 1. Define the date range
+        end_date = datetime.strptime(curr_date, "%Y-%m-%d")
+
+        # 2. Call the interface function to perform the search and extraction
+        # TODO change to 7 days when on production with more ram
+        alpaca_news_results = interface.get_alpaca_news(ticker, curr_date, 1)
+        return alpaca_news_results

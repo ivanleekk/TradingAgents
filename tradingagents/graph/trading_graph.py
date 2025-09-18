@@ -116,15 +116,16 @@ class TradingAgentsGraph:
                 verbose=True,
                 max_tokens=self.config["llamacpp_max_tokens"],
             )
-            self.quick_thinking_llm = ChatLlamaCpp(
-                model_path=self.config["quick_think_llm"],
-                n_ctx=self.config["llamacpp_n_ctx"],
-                n_batch=self.config["llamacpp_n_batch"],
-                n_gpu_layers=self.config["llamacpp_n_gpu_layers"],
-                n_threads=max(1, multiprocessing.cpu_count() - 1),
-                verbose=True,
-                max_tokens=self.config["llamacpp_max_tokens"],
-            )
+            self.quick_thinking_llm = self.deep_thinking_llm
+            # self.quick_thinking_llm = ChatLlamaCpp(
+            #     model_path=self.config["quick_think_llm"],
+            #     n_ctx=self.config["llamacpp_n_ctx"],
+            #     n_batch=self.config["llamacpp_n_batch"],
+            #     n_gpu_layers=self.config["llamacpp_n_gpu_layers"],
+            #     n_threads=max(1, multiprocessing.cpu_count() - 1),
+            #     verbose=True,
+            #     max_tokens=self.config["llamacpp_max_tokens"],
+            # )
 
         else:
             raise ValueError(f"Unsupported LLM provider: {self.config['llm_provider']}")
@@ -198,7 +199,8 @@ class TradingAgentsGraph:
                     # online tools
                     # self.toolkit.get_global_news_openai,
                     # self.toolkit.get_google_news,
-                    self.toolkit.get_web_search_news,
+                    # self.toolkit.get_web_search_news,
+                    self.toolkit.get_alpaca_news,
                     # offline tools
                     # self.toolkit.get_finnhub_news,
                     # self.toolkit.get_reddit_news,

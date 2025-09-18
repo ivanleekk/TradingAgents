@@ -17,6 +17,11 @@ from .config import get_config, set_config, DATA_DIR
 from duckduckgo_search import DDGS
 from newspaper import Article
 from datetime import datetime, timedelta
+from alpaca.data.historical.news import NewsClient
+from alpaca.data.requests import NewsRequest
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def get_finnhub_news(
@@ -760,6 +765,28 @@ def get_web_search_results(ticker, start_date, end_date):
         if all_article_text
         else "No articles found within the specified date range."
     )
+
+
+def get_alpaca_news(ticker: str, curr_date: str, days_before: int):
+    client = NewsClient(
+        os.environ.get("ALPACA_API_KEY"), os.environ.get("ALPACA_SECRET_KEY")
+    )
+    today = datetime.strptime(curr_date, "%Y-%m-%d")
+    request_params = NewsRequest(
+        symbols=ticker.upper(),
+        start=today - timedelta(days=days_before),
+        end=today,
+        exclude_contentless=True,
+        include_content=True,
+    )
+
+    news = client.get_news(request_params)
+    n_articles = len(news.df)
+    if n_articles == 0:
+        return f"No articles found between {(today - timedelta(days=days_before)).strftime('%Y-%m-%d')} and {curr_date} for {ticker}."
+
+    records = news.df.to_json(orient="records")
+    return records
 
 
 def get_stock_news_openai(ticker, curr_date):
