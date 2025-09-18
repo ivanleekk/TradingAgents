@@ -768,6 +768,10 @@ def get_web_search_results(ticker, start_date, end_date):
 
 
 def get_alpaca_news(ticker: str, curr_date: str, days_before: int):
+    """Get news articles for a given stock ticker from Alpaca API."""
+    print(
+        f"\n[bold yellow]Tool Call: get_alpaca_news with args: {ticker}, {curr_date}, {days_before}[/bold yellow]"
+    )
     client = NewsClient(
         os.environ.get("ALPACA_API_KEY"), os.environ.get("ALPACA_SECRET_KEY")
     )
@@ -778,15 +782,23 @@ def get_alpaca_news(ticker: str, curr_date: str, days_before: int):
         end=today,
         exclude_contentless=True,
         include_content=True,
+        limit=4,
     )
 
     news = client.get_news(request_params)
+    if len(news.data["news"]) == 0:
+        return json.dumps([])
+
     n_articles = len(news.df)
+
     if n_articles == 0:
         return f"No articles found between {(today - timedelta(days=days_before)).strftime('%Y-%m-%d')} and {curr_date} for {ticker}."
-
-    records = news.df.to_json(orient="records")
-    return records
+    # ignore images and other non-text content
+    news_df = news.df
+    news_df = news_df.drop(
+        columns=["images", "videos", "source", "url", "author"],
+        errors="ignore",
+    )
 
 
 def get_stock_news_openai(ticker, curr_date):
