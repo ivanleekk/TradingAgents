@@ -164,6 +164,23 @@ wheels = [
 ]
 
 [[package]]
+name = "alpaca-py"
+version = "0.42.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "msgpack" },
+    { name = "pandas" },
+    { name = "pydantic" },
+    { name = "requests" },
+    { name = "sseclient-py" },
+    { name = "websockets" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/23/23/f33b24af8dfd3149f490685dda1ee64f88d15b75fbf9057ac5c83e58268c/alpaca_py-0.42.1.tar.gz", hash = "sha256:a44bf45d40d34fbcba1125a3144ddaea62b44806cfb25e3d948029bb5a233a37", size = 97671, upload-time = "2025-08-29T18:40:52.432Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/b5/efdf8d3d206632b0dfaad07193dd396413235f9d9a96c1843d83594851d4/alpaca_py-0.42.1-py3-none-any.whl", hash = "sha256:234fea37151d4d5995de6d4f2fff24d584120214eb9f39198c399d1000004efa", size = 122157, upload-time = "2025-08-29T18:40:50.9Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.7.0"
 source = { registry = "https://pypi.org/simple" }
@@ -6469,6 +6486,15 @@ wheels = [
 ]
 
 [[package]]
+name = "sseclient-py"
+version = "1.8.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/ed/3df5ab8bb0c12f86c28d0cadb11ed1de44a92ed35ce7ff4fd5518a809325/sseclient-py-1.8.0.tar.gz", hash = "sha256:c547c5c1a7633230a38dc599a21a2dc638f9b5c297286b48b46b935c71fac3e8", size = 7791, upload-time = "2023-09-01T19:39:20.45Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/49/58/97655efdfeb5b4eeab85b1fc5d3fa1023661246c2ab2a26ea8e47402d4f2/sseclient_py-1.8.0-py2.py3-none-any.whl", hash = "sha256:4ecca6dc0b9f963f8384e9d7fd529bf93dd7d708144c4fb5da0e0a1a926fee83", size = 8828, upload-time = "2023-09-01T19:39:17.627Z" },
+]
+
+[[package]]
 name = "starlette"
 version = "0.47.2"
 source = { registry = "https://pypi.org/simple" }
@@ -6839,6 +6865,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "akshare" },
+    { name = "alpaca-py" },
     { name = "backtrader" },
     { name = "chainlit" },
     { name = "chromadb" },
@@ -6881,6 +6908,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "akshare", specifier = ">=1.16.98" },
+    { name = "alpaca-py", specifier = ">=0.42.1" },
     { name = "backtrader", specifier = ">=1.9.78.123" },
     { name = "chainlit", specifier = ">=2.5.5" },
     { name = "chromadb", specifier = ">=1.0.12" },
