@@ -7,13 +7,14 @@ load_dotenv()
 
 # Create a custom config
 config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "llamacpp"  # Use a different model
-config["backend_url"] = "http://localhost:8080/v1"  # Use a different backend
+config["llm_provider"] = "openrouter"  # Use a different model
+config["backend_url"] = "https://openrouter.ai/api/v1"  # Use a different backend
+config["embedding_backend_url"] = "https://api.openai.com/v1"  # Use a different backend
 config["deep_think_llm"] = (
-    "models/Llama-3.3-70B-Instruct.Q5_K_M.gguf"  # Use a different model
+    "z-ai/glm-4.5-air:free"  # Use a different model
 )
 config["quick_think_llm"] = (
-    "models/Llama-3.3-70B-Instruct.Q5_K_M.gguf"  # Use a different model
+    "meta-llama/llama-4-scout:free"  # Use a different model
 )
 config["max_debate_rounds"] = 1  # Increase debate rounds
 config["online_tools"] = True  # Increase debate rounds
@@ -22,7 +23,7 @@ config["online_tools"] = True  # Increase debate rounds
 ta = TradingAgentsGraph(debug=True, config=config)
 
 # forward propagate
-_, decision = ta.propagate("AAPL", "2025-08-18")
+_, decision = ta.propagate("ORCL", "2025-09-23")
 print(decision)
 
 # Memorize mistakes and reflect

@@ -14,7 +14,7 @@ class FinancialSituationMemory:
                 LlamaCppEmbeddings = None
             # path to your local gguf/ggml model file (absolute recommended)
             self.embedding = config.get(
-                "embedding_model_path", "models/nomic-embed-text-v2-moe.f32.gguf"
+                "embedding_model_path", "models/embeddinggemma-300M-F32.gguf"
             )
             if LlamaCppEmbeddings is None:
                 raise RuntimeError(
@@ -24,28 +24,17 @@ class FinancialSituationMemory:
             self.embeddings_model = LlamaCppEmbeddings(
                 model_path=self.embedding,
                 n_ctx=512,
-                n_parts=-1,
-                seed=0,
-                f16_kv=True,
-                logits_all=False,
-                vocab_only=False,
-                use_mlock=False,
-                n_threads=16,
-                n_batch=512,
-                n_gpu_layers=10,
-                verbose=False,
-                device="cuda",
             )
             self.client = None
         else:
             self.embedding = "text-embedding-3-small"
-        self.client = OpenAI(base_url=config["backend_url"])
+        self.client = OpenAI(base_url=config["embedding_backend_url"])
         self.chroma_client = chromadb.Client(Settings(allow_reset=True))
         self.situation_collection = self.chroma_client.create_collection(name=name)
 
     def get_embedding(self, text):
         """Get embedding for a text (provider-dependent)"""
-        if self.embeddings_model is not None:
+        if config["llm_provider"] == "ollama" or config['llm_provider'] == "llamacpp":
             # LlamaCppEmbeddings implements embed_documents(list[str]) -> list[list[float]]
             emb = self.embeddings_model.embed_documents([text])
             return emb[0]

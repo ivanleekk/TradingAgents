@@ -33,7 +33,10 @@ from .setup import GraphSetup
 from .propagation import Propagator
 from .reflection import Reflector
 from .signal_processing import SignalProcessor
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 
 class TradingAgentsGraph:
     """Main class that orchestrates the trading agents framework."""
@@ -69,11 +72,14 @@ class TradingAgentsGraph:
             or self.config["llm_provider"] == "openrouter"
         ):
             self.deep_thinking_llm = ChatOpenAI(
-                model=self.config["deep_think_llm"], base_url=self.config["backend_url"]
+                model=self.config["deep_think_llm"], base_url=self.config["backend_url"],
+                api_key=os.getenv("OPENROUTER_API_KEY")
             )
             self.quick_thinking_llm = ChatOpenAI(
                 model=self.config["quick_think_llm"],
                 base_url=self.config["backend_url"],
+                api_key=os.getenv("OPENROUTER_API_KEY")
+
             )
         elif self.config["llm_provider"].lower() == "ollama":
             self.deep_thinking_llm = ChatOllama(model=self.config["deep_think_llm"])
@@ -109,9 +115,9 @@ class TradingAgentsGraph:
         elif self.config["llm_provider"].lower() == "llamacpp":
             self.deep_thinking_llm = ChatLlamaCpp(
                 model_path=self.config["deep_think_llm"],
-                n_ctx=65536,
+                n_ctx=2048,
                 n_batch=1024,
-                n_gpu_layers=80,
+                n_gpu_layers=-1,
                 n_threads=multiprocessing.cpu_count() - 1,
                 verbose=True,
             )
