@@ -5,6 +5,7 @@ from openai import OpenAI
 
 class FinancialSituationMemory:
     def __init__(self, name, config):
+        self.llm_provider = config["llm_provider"]
         if config["llm_provider"] == "ollama":
             self.embedding = "nomic-embed-text"
         elif config["llm_provider"] == "llamacpp":
@@ -34,7 +35,7 @@ class FinancialSituationMemory:
 
     def get_embedding(self, text):
         """Get embedding for a text (provider-dependent)"""
-        if config["llm_provider"] == "ollama" or config['llm_provider'] == "llamacpp":
+        if self.llm_provider == "ollama" or self.llm_provider == "llamacpp":
             # LlamaCppEmbeddings implements embed_documents(list[str]) -> list[list[float]]
             emb = self.embeddings_model.embed_documents([text])
             return emb[0]
