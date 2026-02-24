@@ -1,0 +1,18 @@
+{
+    "AAPL": {
+        "csv_file": "results_bulk/AAPL_decisions_2020-01-06_2024-12-23.csv",
+        "weight": 0.25
+    },
+    "MSFT": {
+        "csv_file": "results_bulk/MSFT_decisions_2020-01-01_2024-12-31.csv",
+        "weight": 0.25
+    },
+    "NVDA": {
+        "csv_file": "results_bulk/NVDA_decisions_2020-01-01_2024-12-31.csv",
+        "weight": 0.25
+    },
+    "META": {
+        "csv_file": "results_bulk/META_decisions_2020-01-06_2024-12-23.csv",
+        "weight": 0.25
+    }
+}

@@ -9,6 +9,8 @@
 #SBATCH --gpus=h100-96:1
 #SBATCH --mem=700G
 #SBATCH --array=0-19
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=ivan.lee@u.nus.edu
 
 # Define all 20 stocks
 STOCKS=(

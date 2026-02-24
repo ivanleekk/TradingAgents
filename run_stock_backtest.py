@@ -39,15 +39,16 @@ def main():
     config["llm_provider"] = "openrouter"
     config["backend_url"] = "https://openrouter.ai/api/v1"
     config["embedding_backend_url"] = "https://api.openai.com/v1"
-    config["deep_think_llm"] = "qwen/qwen3-235b-a22b:free"
-    config["quick_think_llm"] = "z-ai/glm-4.5-air:free"
+    config["deep_think_llm"] = "z-ai/glm-4-32b"
+    config["quick_think_llm"] = "z-ai/glm-4-32b"
     config["max_debate_rounds"] = 1
     config["online_tools"] = True
+    config["data_dir"] = "./data_dir"
 
     # Initialize trading graph
     print(f"Initializing TradingAgentsGraph for {stock}...")
     ta = TradingAgentsGraph(
-        selected_analysts=["news", "market"], debug=True, config=config
+        selected_analysts=["news", "market", "fundamentals"], debug=True, config=config
     )
 
     # Generate date range (weekdays only)
