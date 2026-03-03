@@ -72,14 +72,14 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
     We expect a CSV with columns: test_date, ticker, decision
     Where decision is a stringified JSON containing Target_Return_30d and Confidence_Score.
     """
-    files = glob.glob(os.path.join(data_dir, "*_decisions_*.csv"))
+    files = glob.glob(os.path.join(data_dir, "*_decisions.csv"))
     if not files:
         print(f"No decision CSVs found in '{data_dir}', returning empty signals")
         return pd.DataFrame()
 
     frames = []
     for fp in sorted(files):
-        ticker = os.path.basename(fp).split("_decisions_")[0]
+        ticker = os.path.basename(fp).split("_decisions.csv")[0]
         try:
             df = pd.read_csv(fp, parse_dates=["test_date"])
             df = df.rename(columns={"test_date": "Date"})

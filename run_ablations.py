@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 import time
 
+from dotenv import load_dotenv
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
@@ -113,11 +114,19 @@ def main():
     trading_dates = get_trading_dates()
     print(f"Total evaluation dates: {len(trading_dates)}")
 
-    # We will use the smaller models or defaults for backtesting speed/cost
-    # Set online_tools=True to fetch historical data dynamically
+    # Load environment variables
+    load_dotenv()
+
+    # Use the config format from run_stock_backtest.py
     config = DEFAULT_CONFIG.copy()
+    config["llm_provider"] = "openrouter"
+    config["backend_url"] = "https://openrouter.ai/api/v1"
+    config["embedding_backend_url"] = "https://api.openai.com/v1"
+    config["deep_think_llm"] = "z-ai/glm-4-32b"
+    config["quick_think_llm"] = "z-ai/glm-4-32b"
+    config["max_debate_rounds"] = 1
     config["online_tools"] = True
-    config["max_debate_rounds"] = 1 # Keep it fast for backtesting
+    config["data_dir"] = "./data_dir"
 
     for var_id, analysts in VARIATIONS.items():
         run_variation(var_id, analysts, trading_dates, config)
