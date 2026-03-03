@@ -362,6 +362,91 @@ def compute_metrics(equity: pd.Series, name: str = "") -> dict:
         "Calmar Ratio": f"{calmar:.3f}"
     }
 
+def load_endowus_historical(curves: dict, metrics_list: list):
+    """Loads actual Endowus historical NAVs and exact metrics from the provided JSON dump."""
+    json_path = os.path.join("data", "endowus_historical.json")
+    if not os.path.exists(json_path):
+        print("Historical Endowus data not found.")
+        return
+
+    try:
+        with open(json_path, "r") as f:
+            data = json.load(f)
+
+        for portfolio in data:
+            name = f"Endowus_Actual_{portfolio['shortName'].replace(' | ', '/')}"
+
+            # Extract and align NAV curve
+            navs = portfolio.get("monthlyNavs", [])
+            if navs:
+                # Convert list of [date, nav] into a Series
+                dates = [pd.to_datetime(row[0]) for row in navs]
+                values = [float(row[1]) for row in navs]
+                s = pd.Series(values, index=dates)
+
+                # Filter to backtest window
+                mask = (s.index >= pd.to_datetime(START_DATE)) & (s.index <= pd.to_datetime(END_DATE))
+                s = s[mask]
+
+                if not s.empty:
+                    # Normalize to starting equity
+                    s = (s / s.iloc[0]) * INITIAL_EQUITY
+                    s.name = name
+                    curves[name] = s
+
+            # Extract official metrics
+            perf = portfolio.get("performanceMetrics", {})
+            if perf:
+                ann_return = perf.get("annualisedReturn", 0.0)
+                max_dd = perf.get("maxDrawDown", {}).get("drawDown", 0.0)
+                sharpe = 0.0 # They didn't provide Sharpe, we can leave 0 or calculate it
+
+                metrics_list.append({
+                    "Strategy": name,
+                    "Ann. Return": f"{ann_return:.2%}",
+                    "Sharpe Ratio": f"N/A", # Provided dump doesn't have it
+                    "Max Drawdown": f"{max_dd:.2%}",
+                    "Calmar Ratio": f"{ann_return / abs(max_dd) if max_dd else 0:.3f}"
+                })
+    except Exception as e:
+        print(f"Error loading historical Endowus data: {e}")
+
+def plot_equity_curves(curves_df: pd.DataFrame, output_path: str = "results/endowus_comparison_plot.png"):
+    """Plots the actual Endowus funds alongside our simulated portfolios."""
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    fig, ax = plt.subplots(figsize=(14, 8))
+
+    # Define styles to distinguish actual Endowus funds vs our simulations
+    for column in curves_df.columns:
+        if "Endowus_Actual" in column:
+            # Render the actual funds as dashed lines with lower alpha so they form a "background" spectrum
+            ax.plot(curves_df.index, curves_df[column], label=column.replace("Endowus_Actual_", "Actual "), ls="--", lw=1.5, alpha=0.7)
+        elif column == "Endowus-60/40":
+            # Our proxy benchmark
+            ax.plot(curves_df.index, curves_df[column], label="Proxy 60/40 Benchmark", color="black", lw=2.5, ls="-")
+        elif "LLM-BL" in column:
+            # Our AI portfolios
+            ax.plot(curves_df.index, curves_df[column], label=column, lw=2.0, ls="-")
+
+    ax.set_title("AI Black-Litterman Portfolios vs Actual Endowus Flagship Funds (2020-2024)", fontsize=14, fontweight="bold")
+    ax.set_ylabel("Portfolio Value (Base $10,000)")
+    ax.set_xlabel("Date")
+
+    # Formatting
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+    plt.xticks(rotation=45)
+
+    # Place legend outside to not obscure the curves
+    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    print(f"Plot saved to {output_path}")
+
 def main():
     print("=" * 60)
     print("  Endowus Black-Litterman Portfolio Engine")
@@ -406,17 +491,27 @@ def main():
         weights_logs[name] = wlog
         print(f"  Final equity: ${curve.iloc[-1]:,.2f}")
 
+    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
+
+    # Inject actual historical Endowus numbers
+    load_endowus_historical(curves, metrics_list)
+
     print("\n[Metrics Summary]")
     print("=" * 70)
-    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
-    summary = pd.DataFrame(metrics_list)
+    summary = pd.DataFrame([m for m in metrics_list if m]) # Filter out any empties
     if not summary.empty:
         print(summary.to_string(index=False))
     print("=" * 70)
 
     os.makedirs("results", exist_ok=True)
     summary.to_csv("results/endowus_bl_performance_summary.csv", index=False)
-    pd.DataFrame(curves).to_csv("results/endowus_bl_equity_curves.csv")
+
+    # Save curves, handle forward filling for the monthly Endowus data to align with weekly dates
+    curves_df = pd.DataFrame(curves).ffill()
+    curves_df.to_csv("results/endowus_bl_equity_curves.csv")
+
+    # Generate the comparison plot
+    plot_equity_curves(curves_df)
 
     print("Backtest complete. Results saved to results/ folder.")
 
