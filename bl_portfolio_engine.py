@@ -51,8 +51,17 @@ def load_human_baselines():
 HUMAN_BASELINES = load_human_baselines()
 
 def get_market_caps(tickers):
-    """Fetch market cap for tickers to determine market-implied weights."""
-    print(f"Fetching market caps for {len(tickers)} tickers...")
+    """Fetch market cap for tickers, caching the result to avoid yfinance rate limits."""
+    cache_file = "data/market_caps.json"
+    if os.path.exists(cache_file):
+        with open(cache_file, "r") as f:
+            cached_caps = json.load(f)
+        # Verify cache has all requested tickers
+        if all(t in cached_caps for t in tickers):
+            print(f"Loaded market caps from cache for {len(tickers)} tickers.")
+            return cached_caps
+
+    print(f"Fetching market caps for {len(tickers)} tickers from yfinance...")
     caps = {}
     for t in tickers:
         try:
@@ -62,8 +71,14 @@ def get_market_caps(tickers):
             if cap is None:
                 cap = 1e9 # Fallback
             caps[t] = cap
-        except:
+        except Exception as e:
+            print(f"Error fetching market cap for {t}: {e}")
             caps[t] = 1e9
+
+    os.makedirs("data", exist_ok=True)
+    with open(cache_file, "w") as f:
+        json.dump(caps, f)
+
     return caps
 
 def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
@@ -89,22 +104,37 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
             target_returns = []
             confidences = []
 
+            import re
             for idx, row in df.iterrows():
                 decision_str = str(row['decision']).strip()
+
+                # Strip markdown blocks if present
+                if decision_str.startswith("```json"):
+                    decision_str = decision_str[7:]
+                if decision_str.startswith("```"):
+                    decision_str = decision_str[3:]
+                if decision_str.endswith("```"):
+                    decision_str = decision_str[:-3]
+                decision_str = decision_str.strip()
+
                 try:
                     data = json.loads(decision_str)
-                    ret_str = str(data.get("Target_Return_30d", "0%")).replace('%', '')
-                    ret = float(ret_str) / 100.0 if ret_str else 0.0
+                    ret_str = str(data.get("Target_Return_30d", "")).replace('%', '')
 
-                    # Annualize 30-day return: (1 + r)^(365/30) - 1
-                    annual_ret = (1 + ret)**(365/30) - 1
+                    if not ret_str:
+                        # Append None to indicate a missing/neutral view
+                        target_returns.append(None)
+                    else:
+                        ret = float(ret_str) / 100.0
+                        # Annualize 30-day return: (1 + r)^(365/30) - 1
+                        annual_ret = (1 + ret)**(365/30) - 1
+                        target_returns.append(annual_ret)
 
                     conf = float(data.get("Confidence_Score", 5))
-                    target_returns.append(annual_ret)
                     confidences.append(conf)
-                except:
-                    # Fallback if unparseable
-                    target_returns.append(0.0)
+                except Exception as e:
+                    # Fallback to None (market_prior) instead of 0.0 (bearish)
+                    target_returns.append(None)
                     confidences.append(5.0)
 
             df['target_return'] = target_returns
@@ -193,7 +223,11 @@ def compute_bl_weights(
         market_prior = delta * S.dot(market_weights)
 
         # Format views
-        Q = pd.Series({t: views.get(t, market_prior.get(t, 0.05)) for t in active_set})
+        # If the view is None, it means the LLM failed or provided no view, fallback to market_prior
+        Q = pd.Series({
+            t: views.get(t) if views.get(t) is not None else market_prior.get(t, 0.05)
+            for t in active_set
+        })
 
         # Construct confidence matrix Omega (diagonal)
         # Scale uncertainty inversely to confidence (1-10).
