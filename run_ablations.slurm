@@ -2,13 +2,14 @@
 #SBATCH --job-name=ablations_run
 #SBATCH --output=runs/ablations_%A_%a/run.out
 #SBATCH --error=runs/ablations_%A_%a/run.err
-#SBATCH --time=48:00:00
-#SBATCH --partition=gpu
+#SBATCH --time=72:00:00
+#SBATCH --partition=long
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gpus=h100-96:1
-#SBATCH --mem=700G
+#SBATCH --mem=64G
 #SBATCH --array=0-3
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=ivanlee
 
 # Map array ID to Variation letter (0->A, 1->B, 2->C, 3->D)
 VARS=("A" "B" "C" "D")

@@ -66,9 +66,9 @@ def get_trading_dates() -> List[str]:
     return sorted(list(dates))
 
 def run_variation(variation_id: str, analysts: List[str], dates: List[str], config: Dict):
-    print(f"\n{'='*50}")
-    print(f"Running Variation {variation_id} (Analysts: {analysts})")
-    print(f"{'='*50}")
+    print(f"\n{'='*50}", flush=True)
+    print(f"Running Variation {variation_id} (Analysts: {analysts})", flush=True)
+    print(f"{'='*50}", flush=True)
 
     out_dir = f"results_LLM_{variation_id}"
 
@@ -101,18 +101,18 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
 
             for dt in dates:
                 if dt in existing_dates:
-                    print(f"[{variation_id}] Skipping {ticker} on {dt} (Already done)")
+                    print(f"[{variation_id}] Skipping {ticker} on {dt} (Already done)", flush=True)
                     completed_tasks += 1
                     continue
 
-                print(f"[{variation_id}] [{completed_tasks+1}/{total_tasks}] Evaluating {ticker} on {dt}...")
+                print(f"[{variation_id}] [{completed_tasks+1}/{total_tasks}] Evaluating {ticker} on {dt}...", flush=True)
                 task_start = time.time()
                 try:
                     state, decision = ta.propagate(company_name=ticker, trade_date=dt)
                     writer.writerow([dt, decision])
                     f.flush()
                 except Exception as e:
-                    print(f"Error evaluating {ticker} on {dt}: {e}")
+                    print(f"Error evaluating {ticker} on {dt}: {e}", flush=True)
 
                 task_end = time.time()
                 elapsed = task_end - task_start
@@ -124,18 +124,18 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
                 tasks_remaining = total_tasks - completed_tasks
                 eta_seconds = avg_time * tasks_remaining
 
-                print(f"   -> Done in {elapsed:.1f}s. ETA for Variation {variation_id}: {timedelta(seconds=int(eta_seconds))}")
+                print(f"   -> Done in {elapsed:.1f}s. ETA for Variation {variation_id}: {timedelta(seconds=int(eta_seconds))}", flush=True)
 
                 # Sleep briefly to avoid aggressive rate limits
                 time.sleep(2)
 
     total_time = time.time() - start_time_variation
-    print(f"\nVariation {variation_id} completed in {timedelta(seconds=int(total_time))}")
+    print(f"\nVariation {variation_id} completed in {timedelta(seconds=int(total_time))}", flush=True)
 
 def main():
-    print("Gathering dates for event windows...")
+    print("Gathering dates for event windows...", flush=True)
     trading_dates = get_trading_dates()
-    print(f"Total evaluation dates: {len(trading_dates)}")
+    print(f"Total evaluation dates: {len(trading_dates)}", flush=True)
 
     # Load environment variables
     load_dotenv()
@@ -158,14 +158,14 @@ def main():
             analysts = VARIATIONS[var_id]
             run_variation(var_id, analysts, trading_dates, config)
         else:
-            print(f"Error: Variation {var_id} not recognized. Must be one of A, B, C, D.")
+            print(f"Error: Variation {var_id} not recognized. Must be one of A, B, C, D.", flush=True)
             sys.exit(1)
     else:
         # Run all variations sequentially
         for var_id, analysts in VARIATIONS.items():
             run_variation(var_id, analysts, trading_dates, config)
 
-    print("\nExecution completed.")
+    print("\nExecution completed.", flush=True)
 
 if __name__ == "__main__":
     main()
