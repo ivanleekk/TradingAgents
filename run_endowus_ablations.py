@@ -5,6 +5,8 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import List, Dict
 import time
+import concurrent.futures
+from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
 
 from dotenv import load_dotenv
 from tradingagents.graph.trading_graph import TradingAgentsGraph
@@ -70,6 +72,27 @@ def get_trading_dates() -> List[str]:
         dates.update(generate_weekly_mondays(start, end))
     return sorted(list(dates))
 
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=2, min=2, max=60),
+    reraise=True
+)
+def evaluate_ticker_date(ticker: str, dt: str, variation_id: str, analysts: List[str], config: Dict):
+    """
+    Evaluates a single ticker on a single date by initializing a new TradingAgentsGraph.
+    Uses exponential backoff for rate limits/API errors.
+    """
+    task_start = time.time()
+    ta = TradingAgentsGraph(selected_analysts=analysts, config=config)
+    state, decision = ta.propagate(company_name=ticker, trade_date=dt)
+    elapsed = time.time() - task_start
+    return {
+        "ticker": ticker,
+        "test_date": dt,
+        "decision": decision,
+        "elapsed": elapsed
+    }
+
 def run_variation(variation_id: str, analysts: List[str], dates: List[str], config: Dict):
     print(f"\n{'='*50}", flush=True)
     print(f"Running Endowus Variation {variation_id} (Analysts: {analysts})", flush=True)
@@ -77,65 +100,85 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
 
     out_dir = f"results_endowus_{variation_id}"
 
-    # Initialize the graph with the specific subset of analysts
-    ta = TradingAgentsGraph(selected_analysts=analysts, config=config)
-
-    total_tasks = len(ETFS) * len(dates)
-    completed_tasks = 0
-    start_time_variation = time.time()
-    task_times = []
-
+    # 1. Identify which tasks are already done across all tickers to support resume
+    completed_tasks_set = set() # Store (ticker, date) tuples
     for ticker in ETFS:
         csv_file = os.path.join(out_dir, f"{ticker}_decisions.csv")
-        file_exists = os.path.isfile(csv_file)
-
-        # Keep track of existing dates to resume if stopped
-        existing_dates = set()
-        if file_exists:
+        if os.path.isfile(csv_file):
             try:
                 df = pd.read_csv(csv_file)
                 if 'test_date' in df.columns:
-                    existing_dates = set(df['test_date'].astype(str))
+                    for dt in df['test_date'].astype(str):
+                        completed_tasks_set.add((ticker, dt))
             except pd.errors.EmptyDataError:
                 pass
 
-        with open(csv_file, 'a', newline='') as f:
-            writer = csv.writer(f)
-            if not file_exists:
+    # 2. Build the list of pending tasks
+    tasks = []
+    for ticker in ETFS:
+        for dt in dates:
+            if (ticker, dt) not in completed_tasks_set:
+                tasks.append((ticker, dt))
+            else:
+                print(f"[{variation_id}] Skipping {ticker} on {dt} (Already done)", flush=True)
+
+    total_tasks_run = len(tasks)
+    if total_tasks_run == 0:
+        print(f"\nAll tasks for Variation {variation_id} are already completed!", flush=True)
+        return
+
+    print(f"[{variation_id}] {total_tasks_run} pending tasks to evaluate...", flush=True)
+
+    start_time_variation = time.time()
+    completed_this_run = 0
+    task_times = []
+
+    # Prepare CSV files and headers if they don't exist
+    for ticker in ETFS:
+        csv_file = os.path.join(out_dir, f"{ticker}_decisions.csv")
+        if not os.path.isfile(csv_file):
+            with open(csv_file, 'w', newline='') as f:
+                writer = csv.writer(f)
                 writer.writerow(['test_date', 'decision'])
 
-            for dt in dates:
-                if dt in existing_dates:
-                    print(f"[{variation_id}] Skipping {ticker} on {dt} (Already done)", flush=True)
-                    completed_tasks += 1
-                    continue
+    # 3. Multithreaded execution
+    max_workers = 10
+    print(f"[{variation_id}] Starting thread pool with {max_workers} workers...", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # Submit all tasks
+        future_to_task = {
+            executor.submit(evaluate_ticker_date, t, d, variation_id, analysts, config): (t, d)
+            for (t, d) in tasks
+        }
 
-                print(f"[{variation_id}] [{completed_tasks+1}/{total_tasks}] Evaluating {ticker} on {dt}...", flush=True)
-                task_start = time.time()
-                try:
-                    state, decision = ta.propagate(company_name=ticker, trade_date=dt)
-                    writer.writerow([dt, decision])
-                    f.flush()
-                except Exception as e:
-                    print(f"Error evaluating {ticker} on {dt}: {e}", flush=True)
+        # Process as they complete
+        for future in concurrent.futures.as_completed(future_to_task):
+            t, d = future_to_task[future]
+            try:
+                result = future.result()
 
-                task_end = time.time()
-                elapsed = task_end - task_start
+                # Write to the specific ticker's CSV safely in the main thread
+                csv_file = os.path.join(out_dir, f"{result['ticker']}_decisions.csv")
+                with open(csv_file, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([result['test_date'], result['decision']])
+
+                elapsed = result['elapsed']
                 task_times.append(elapsed)
-
-                completed_tasks += 1
+                completed_this_run += 1
 
                 avg_time = sum(task_times) / len(task_times)
-                tasks_remaining = total_tasks - completed_tasks
-                eta_seconds = avg_time * tasks_remaining
+                tasks_remaining = total_tasks_run - completed_this_run
 
-                print(f"   -> Done in {elapsed:.1f}s. ETA for Variation {variation_id}: {timedelta(seconds=int(eta_seconds))}", flush=True)
+                # Approximate ETA based on avg time per task and workers
+                eta_seconds = (avg_time * tasks_remaining) / max_workers
 
-                # Sleep briefly to avoid aggressive rate limits
-                time.sleep(2)
+                print(f"[{variation_id}] [{completed_this_run}/{total_tasks_run}] Evaluated {t} on {d} (Done in {elapsed:.1f}s) -> ETA: {timedelta(seconds=int(eta_seconds))}", flush=True)
+            except Exception as exc:
+                print(f"[{variation_id}] Error evaluating {t} on {d}: {exc}", flush=True)
 
     total_time = time.time() - start_time_variation
-    print(f"\nVariation {variation_id} completed in {timedelta(seconds=int(total_time))}", flush=True)
+    print(f"\nVariation {variation_id} completed {total_tasks_run} tasks in {timedelta(seconds=int(total_time))}", flush=True)
 
 def main():
     print("Gathering dates for event windows...", flush=True)
