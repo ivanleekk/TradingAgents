@@ -13,6 +13,7 @@ DEFAULT_CONFIG = {
     "deep_think_llm": "llama3.2",
     "quick_think_llm": "llama3.2",
     "backend_url": "http://localhost:11434",
+    "embedding_backend_url": "http://localhost:11434/v1",
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
