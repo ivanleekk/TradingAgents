@@ -7,6 +7,30 @@ from dateutil.relativedelta import relativedelta
 import json
 from .reddit_utils import fetch_top_from_category
 from tqdm import tqdm
+import functools
+
+@functools.lru_cache(maxsize=32)
+def _load_yfin_data(symbol: str):
+    # read in data
+    data = pd.read_csv(
+        os.path.join(
+            DATA_DIR,
+            f"market_data/price_data/{symbol}-YFin-data-2015-01-01-2025-03-25.csv",
+        )
+    )
+
+    # Extract just the date part for comparison
+    data["DateOnly"] = data["Date"].str[:10]
+    return data
+
+@functools.lru_cache(maxsize=32)
+def _load_simfin_data(data_path: str):
+    df = pd.read_csv(data_path, sep=";")
+
+    # Convert date strings to datetime objects and remove any time components
+    df["Report Date"] = pd.to_datetime(df["Report Date"], utc=True).dt.normalize()
+    df["Publish Date"] = pd.to_datetime(df["Publish Date"], utc=True).dt.normalize()
+    return df
 
 def get_YFin_data_window(
     symbol: Annotated[str, "ticker symbol of the company"],
@@ -19,20 +43,12 @@ def get_YFin_data_window(
     start_date = before.strftime("%Y-%m-%d")
 
     # read in data
-    data = pd.read_csv(
-        os.path.join(
-            DATA_DIR,
-            f"market_data/price_data/{symbol}-YFin-data-2015-01-01-2025-03-25.csv",
-        )
-    )
-
-    # Extract just the date part for comparison
-    data["DateOnly"] = data["Date"].str[:10]
+    data = _load_yfin_data(symbol)
 
     # Filter data between the start and end dates (inclusive)
     filtered_data = data[
         (data["DateOnly"] >= start_date) & (data["DateOnly"] <= curr_date)
-    ]
+    ].copy()
 
     # Drop the temporary column we created
     filtered_data = filtered_data.drop("DateOnly", axis=1)
@@ -54,25 +70,17 @@ def get_YFin_data(
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ) -> str:
     # read in data
-    data = pd.read_csv(
-        os.path.join(
-            DATA_DIR,
-            f"market_data/price_data/{symbol}-YFin-data-2015-01-01-2025-03-25.csv",
-        )
-    )
+    data = _load_yfin_data(symbol)
 
     if end_date > "2025-03-25":
         raise Exception(
             f"Get_YFin_Data: {end_date} is outside of the data range of 2015-01-01 to 2025-03-25"
         )
 
-    # Extract just the date part for comparison
-    data["DateOnly"] = data["Date"].str[:10]
-
     # Filter data between the start and end dates (inclusive)
     filtered_data = data[
         (data["DateOnly"] >= start_date) & (data["DateOnly"] <= end_date)
-    ]
+    ].copy()
 
     # Drop the temporary column we created
     filtered_data = filtered_data.drop("DateOnly", axis=1)
@@ -241,11 +249,7 @@ def get_simfin_balance_sheet(
         "us",
         f"us-balance-{freq}.csv",
     )
-    df = pd.read_csv(data_path, sep=";")
-
-    # Convert date strings to datetime objects and remove any time components
-    df["Report Date"] = pd.to_datetime(df["Report Date"], utc=True).dt.normalize()
-    df["Publish Date"] = pd.to_datetime(df["Publish Date"], utc=True).dt.normalize()
+    df = _load_simfin_data(data_path)
 
     # Convert the current date to datetime and normalize
     curr_date_dt = pd.to_datetime(curr_date, utc=True).normalize()
@@ -288,11 +292,7 @@ def get_simfin_cashflow(
         "us",
         f"us-cashflow-{freq}.csv",
     )
-    df = pd.read_csv(data_path, sep=";")
-
-    # Convert date strings to datetime objects and remove any time components
-    df["Report Date"] = pd.to_datetime(df["Report Date"], utc=True).dt.normalize()
-    df["Publish Date"] = pd.to_datetime(df["Publish Date"], utc=True).dt.normalize()
+    df = _load_simfin_data(data_path)
 
     # Convert the current date to datetime and normalize
     curr_date_dt = pd.to_datetime(curr_date, utc=True).normalize()
@@ -335,11 +335,7 @@ def get_simfin_income_statements(
         "us",
         f"us-income-{freq}.csv",
     )
-    df = pd.read_csv(data_path, sep=";")
-
-    # Convert date strings to datetime objects and remove any time components
-    df["Report Date"] = pd.to_datetime(df["Report Date"], utc=True).dt.normalize()
-    df["Publish Date"] = pd.to_datetime(df["Publish Date"], utc=True).dt.normalize()
+    df = _load_simfin_data(data_path)
 
     # Convert the current date to datetime and normalize
     curr_date_dt = pd.to_datetime(curr_date, utc=True).normalize()
