@@ -74,6 +74,11 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
     # Initialize the graph with the specific subset of analysts
     ta = TradingAgentsGraph(selected_analysts=analysts, config=config)
 
+    total_tasks = len(ETFS) * len(dates)
+    completed_tasks = 0
+    start_time_variation = time.time()
+    task_times = []
+
     for ticker in ETFS:
         csv_file = os.path.join(out_dir, f"{ticker}_decisions.csv")
         file_exists = os.path.isfile(csv_file)
@@ -96,9 +101,11 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
             for dt in dates:
                 if dt in existing_dates:
                     print(f"[{variation_id}] Skipping {ticker} on {dt} (Already done)")
+                    completed_tasks += 1
                     continue
 
-                print(f"[{variation_id}] Evaluating {ticker} on {dt}...")
+                print(f"[{variation_id}] [{completed_tasks+1}/{total_tasks}] Evaluating {ticker} on {dt}...")
+                task_start = time.time()
                 try:
                     state, decision = ta.propagate(company_name=ticker, trade_date=dt)
                     writer.writerow([dt, decision])
@@ -106,8 +113,23 @@ def run_variation(variation_id: str, analysts: List[str], dates: List[str], conf
                 except Exception as e:
                     print(f"Error evaluating {ticker} on {dt}: {e}")
 
+                task_end = time.time()
+                elapsed = task_end - task_start
+                task_times.append(elapsed)
+
+                completed_tasks += 1
+
+                avg_time = sum(task_times) / len(task_times)
+                tasks_remaining = total_tasks - completed_tasks
+                eta_seconds = avg_time * tasks_remaining
+
+                print(f"   -> Done in {elapsed:.1f}s. ETA for Variation {variation_id}: {timedelta(seconds=int(eta_seconds))}")
+
                 # Sleep briefly to avoid aggressive rate limits
                 time.sleep(2)
+
+    total_time = time.time() - start_time_variation
+    print(f"\nVariation {variation_id} completed in {timedelta(seconds=int(total_time))}")
 
 def main():
     print("Gathering dates for event windows...")
