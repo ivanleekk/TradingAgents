@@ -29,7 +29,15 @@ class FinancialSituationMemory:
             self.client = None
         else:
             self.embedding = "text-embedding-3-small"
-        self.client = OpenAI(base_url=config["embedding_backend_url"])
+
+        if config["llm_provider"] != "llamacpp":
+            # For ollama and others that use the OpenAI compatibility layer
+            base_url = config.get("embedding_backend_url", config.get("backend_url", "http://localhost:11434/v1"))
+            # ensure /v1 for ollama OpenAI compatibility
+            if "localhost:11434" in base_url and not base_url.endswith("/v1") and not base_url.endswith("/v1/"):
+                base_url = base_url.rstrip("/") + "/v1"
+            self.client = OpenAI(base_url=base_url)
+
         self.chroma_client = chromadb.Client(Settings(allow_reset=True))
         self.situation_collection = self.chroma_client.create_collection(name=name)
 

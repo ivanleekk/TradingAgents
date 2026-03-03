@@ -20,12 +20,34 @@ class SignalProcessor:
         Returns:
             Extracted decision (BUY, SELL, or HOLD)
         """
+        import json
+        import re
+
+        # Try to find JSON block directly in the text
+        match = re.search(r"```json(.*?)```", full_signal, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group(1).strip())
+                if "Target_Return_30d" in data and "Confidence_Score" in data:
+                    return json.dumps(data)
+            except json.JSONDecodeError:
+                pass
+
+        # Use LLM as fallback if strict parsing fails
         messages = [
             (
                 "system",
-                "You are an efficient assistant designed to analyze paragraphs or financial reports provided by a group of analysts. Your task is to extract the investment decision: SELL, BUY, or HOLD. Provide only the extracted decision (SELL, BUY, or HOLD) as your output, without adding any additional text or information.",
+                "You are an efficient data extraction assistant designed to extract structured JSON data from text. Extract the 'Target_Return_30d' and 'Confidence_Score' metrics from the text. Respond ONLY with valid JSON. For example: {\"Target_Return_30d\": \"+2.5%\", \"Confidence_Score\": 8}. Do not output any markdown block ticks.",
             ),
             ("human", full_signal),
         ]
 
-        return self.quick_thinking_llm.invoke(messages).content
+        result = self.quick_thinking_llm.invoke(messages).content.strip()
+        # Clean up any potential markdown formatting in the fallback response
+        if result.startswith("```json"):
+            result = result[7:]
+        if result.startswith("```"):
+            result = result[3:]
+        if result.endswith("```"):
+            result = result[:-3]
+        return result.strip()

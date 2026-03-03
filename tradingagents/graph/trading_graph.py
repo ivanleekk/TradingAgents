@@ -167,10 +167,15 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Set up the graph
-        self.graph = self.graph_setup.setup_graph(selected_analysts)
+        self.selected_analysts = selected_analysts
+        self.graph = self.graph_setup.setup_graph(self.selected_analysts)
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources."""
+        # For ETFs and Macro trading, standard corporate balance sheets will return nothing.
+        # We supplement the "fundamentals" node with a Macroeconomic data tool pulling from FRED.
+        from tradingagents.dataflows.macro_utils import get_macro_fundamentals
+
         return {
             "market": ToolNode(
                 [
@@ -202,6 +207,8 @@ class TradingAgentsGraph:
             ),
             "fundamentals": ToolNode(
                 [
+                    # Macro Fundamentals Tool
+                    get_macro_fundamentals,
                     # online tools
                     # self.toolkit.get_fundamentals_openai,
                     # offline tools
@@ -247,38 +254,25 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Return decision and processed signal
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        # Since we cut off the graph at the Trader node, we extract the JSON from the trader's output directly
+        decision_raw = final_state.get("trader_investment_plan", "")
+        return final_state, self.process_signal(decision_raw)
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
+        # Use .get() for optional downstream fields since the graph may have terminated early
         self.log_states_dict[str(trade_date)] = {
-            "company_of_interest": final_state["company_of_interest"],
-            "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
-            "investment_debate_state": {
-                "bull_history": final_state["investment_debate_state"]["bull_history"],
-                "bear_history": final_state["investment_debate_state"]["bear_history"],
-                "history": final_state["investment_debate_state"]["history"],
-                "current_response": final_state["investment_debate_state"][
-                    "current_response"
-                ],
-                "judge_decision": final_state["investment_debate_state"][
-                    "judge_decision"
-                ],
-            },
-            "trader_investment_decision": final_state["trader_investment_plan"],
-            "risk_debate_state": {
-                "risky_history": final_state["risk_debate_state"]["risky_history"],
-                "safe_history": final_state["risk_debate_state"]["safe_history"],
-                "neutral_history": final_state["risk_debate_state"]["neutral_history"],
-                "history": final_state["risk_debate_state"]["history"],
-                "judge_decision": final_state["risk_debate_state"]["judge_decision"],
-            },
-            "investment_plan": final_state["investment_plan"],
-            "final_trade_decision": final_state["final_trade_decision"],
+            "company_of_interest": final_state.get("company_of_interest", ""),
+            "trade_date": final_state.get("trade_date", ""),
+            "market_report": final_state.get("market_report", ""),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),
+            "fundamentals_report": final_state.get("fundamentals_report", ""),
+            "investment_debate_state": final_state.get("investment_debate_state", {}),
+            "trader_investment_decision": final_state.get("trader_investment_plan", ""),
+            "risk_debate_state": final_state.get("risk_debate_state", {}),
+            "investment_plan": final_state.get("investment_plan", ""),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
         }
 
         # Save to file

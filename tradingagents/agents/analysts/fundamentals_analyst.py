@@ -9,25 +9,19 @@ def create_fundamentals_analyst(llm, toolkit):
         ticker = state["company_of_interest"]
         company_name = state["company_of_interest"]
 
-        if toolkit.config["online_tools"]:
-            # tools = [toolkit.get_fundamentals_openai]
-            tools = [
-                toolkit.get_simfin_balance_sheet,
-                toolkit.get_simfin_cashflow,
-                toolkit.get_simfin_income_stmt,
-            ]
-        else:
-            tools = [
-                toolkit.get_finnhub_company_insider_sentiment,
-                toolkit.get_finnhub_company_insider_transactions,
-                toolkit.get_simfin_balance_sheet,
-                toolkit.get_simfin_cashflow,
-                toolkit.get_simfin_income_stmt,
-            ]
+        from tradingagents.dataflows.macro_utils import get_macro_fundamentals
+
+        # Because we are trading ETFs, standard corporate balance sheets do not exist.
+        # We replace the SimFin tools with the Macro Fundamentals FRED tool.
+        tools = [get_macro_fundamentals]
 
         system_message = (
-            "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, company financial history, insider sentiment and insider transactions to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Do not simply state the trends are mixed, provide detailed and finegrained analysis and insights that may help traders make decisions."
-            + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read.",
+            "You are a Macroeconomic Fundamentals Analyst tasked with analyzing the broad market and economic conditions surrounding an ETF. "
+            "Because ETFs are baskets of assets and not individual corporations, they do not have corporate balance sheets, cash flows, or insider transactions. "
+            "Instead, you must ALWAYS use the `get_macro_fundamentals` tool to fetch the trailing 12-month data for Interest Rates (FEDFUNDS), Inflation (CPI), GDP, and Unemployment Rate. "
+            "Please write a comprehensive macroeconomic report analyzing how these broad fundamental indicators might impact the specified ETF. "
+            "Provide detailed and finegrained analysis and insights that may help traders make decisions. "
+            "Make sure to append a Markdown table at the end of the report to organize key macro points in the report, organized and easy to read."
         )
 
         prompt = ChatPromptTemplate.from_messages(
