@@ -167,7 +167,8 @@ class TradingAgentsGraph:
         self.log_states_dict = {}  # date to full state dict
 
         # Set up the graph
-        self.graph = self.graph_setup.setup_graph(selected_analysts)
+        self.selected_analysts = selected_analysts
+        self.graph = self.graph_setup.setup_graph(self.selected_analysts)
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources."""
