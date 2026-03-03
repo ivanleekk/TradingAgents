@@ -172,6 +172,10 @@ class TradingAgentsGraph:
 
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources."""
+        # For ETFs and Macro trading, standard corporate balance sheets will return nothing.
+        # We supplement the "fundamentals" node with a Macroeconomic data tool pulling from FRED.
+        from tradingagents.dataflows.macro_utils import get_macro_fundamentals
+
         return {
             "market": ToolNode(
                 [
@@ -203,6 +207,8 @@ class TradingAgentsGraph:
             ),
             "fundamentals": ToolNode(
                 [
+                    # Macro Fundamentals Tool
+                    get_macro_fundamentals,
                     # online tools
                     # self.toolkit.get_fundamentals_openai,
                     # offline tools
