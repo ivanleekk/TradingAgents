@@ -30,6 +30,7 @@ def get_macro_fundamentals(
         'UNRATE': 'Unemployment Rate (%)'
     }
 
+    print(f"[TOOL: get_macro_fundamentals] Fetching FRED data (Rates, CPI, GDP) from {start_date} to {end_date}...", flush=True)
     try:
         df = web.DataReader(list(series_dict.keys()), 'fred', start, end)
         df.rename(columns=series_dict, inplace=True)
