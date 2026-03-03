@@ -173,33 +173,38 @@ class GraphSetup:
             },
         )
         workflow.add_edge("Research Manager", "Trader")
-        workflow.add_edge("Trader", "Risky Analyst")
-        workflow.add_conditional_edges(
-            "Risky Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Safe Analyst": "Safe Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Safe Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Neutral Analyst": "Neutral Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-        workflow.add_conditional_edges(
-            "Neutral Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Risky Analyst": "Risky Analyst",
-                "Risk Judge": "Risk Judge",
-            },
-        )
-
-        workflow.add_edge("Risk Judge", END)
+        workflow.add_edge("Trader", END)
+        # Note: We are cutting off the graph at the Trader node to skip the
+        # unnecessary risk debate and portfolio manager nodes for Black-Litterman optimizations.
+        # This significantly reduces LLM execution time and token usage.
+        #
+        # workflow.add_edge("Trader", "Risky Analyst")
+        # workflow.add_conditional_edges(
+        #     "Risky Analyst",
+        #     self.conditional_logic.should_continue_risk_analysis,
+        #     {
+        #         "Safe Analyst": "Safe Analyst",
+        #         "Risk Judge": "Risk Judge",
+        #     },
+        # )
+        # workflow.add_conditional_edges(
+        #     "Safe Analyst",
+        #     self.conditional_logic.should_continue_risk_analysis,
+        #     {
+        #         "Neutral Analyst": "Neutral Analyst",
+        #         "Risk Judge": "Risk Judge",
+        #     },
+        # )
+        # workflow.add_conditional_edges(
+        #     "Neutral Analyst",
+        #     self.conditional_logic.should_continue_risk_analysis,
+        #     {
+        #         "Risky Analyst": "Risky Analyst",
+        #         "Risk Judge": "Risk Judge",
+        #     },
+        # )
+        #
+        # workflow.add_edge("Risk Judge", END)
 
         # Compile and return
         return workflow.compile()
