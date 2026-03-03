@@ -1,8 +1,8 @@
 import os
+import sys
 import csv
 import pandas as pd
 from datetime import datetime, timedelta
-import sys
 from typing import List, Dict
 import time
 
@@ -11,19 +11,24 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 # Ensure output directories exist
-os.makedirs("results_LLM_A", exist_ok=True)
-os.makedirs("results_LLM_B", exist_ok=True)
-os.makedirs("results_LLM_C", exist_ok=True)
-os.makedirs("results_LLM_D", exist_ok=True)
+os.makedirs("results_endowus_A", exist_ok=True)
+os.makedirs("results_endowus_B", exist_ok=True)
+os.makedirs("results_endowus_C", exist_ok=True)
+os.makedirs("results_endowus_D", exist_ok=True)
 
-# The new ETF universe
+# The new Endowus Proxy Universe (8 ETFs representing the Flagship 60/40 Fund)
 ETFS = [
-    "SPY", "QQQ", "EEM", "TLT", "LQD", "GLD", "USO",
-    "PDBC", "UUP", "FXE", "GBTC", "VNQ", "EWS", "FXI",
-    "EWU", "EWJ", "EMB", "VNQI"
+    "URTH", # Global Developed Equity (28.5%)
+    "SPY",  # US S&P 500 (17.4%)
+    "EEM",  # Emerging Markets Equity (9.3%)
+    "VPL",  # Pacific Basin Small/Mid Cap (4.8%)
+    "BNDW", # Global Aggregate Bond (23.0%)
+    "AGG",  # US Aggregate Bond (7.0%)
+    "EMB",  # Emerging Markets Government Bond (6.0%)
+    "BSV",  # Short-Term Global Bond (4.0%)
 ]
 
-# Event Windows (from Phase 4)
+# Event Windows
 EVENTS = {
     "COVID-19 Crash": ("2020-02-01", "2020-05-31"),
     "Inflation Shock": ("2021-11-01", "2022-01-31"),
@@ -67,10 +72,10 @@ def get_trading_dates() -> List[str]:
 
 def run_variation(variation_id: str, analysts: List[str], dates: List[str], config: Dict):
     print(f"\n{'='*50}", flush=True)
-    print(f"Running Variation {variation_id} (Analysts: {analysts})", flush=True)
+    print(f"Running Endowus Variation {variation_id} (Analysts: {analysts})", flush=True)
     print(f"{'='*50}", flush=True)
 
-    out_dir = f"results_LLM_{variation_id}"
+    out_dir = f"results_endowus_{variation_id}"
 
     # Initialize the graph with the specific subset of analysts
     ta = TradingAgentsGraph(selected_analysts=analysts, config=config)
@@ -152,7 +157,7 @@ def main():
     config["data_dir"] = "./data_dir"
 
     if len(sys.argv) > 1:
-        # Run specific variation provided as argument (e.g., python run_ablations.py A)
+        # Run specific variation provided as argument
         var_id = sys.argv[1].upper()
         if var_id in VARIATIONS:
             analysts = VARIATIONS[var_id]
