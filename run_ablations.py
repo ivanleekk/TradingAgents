@@ -2,6 +2,7 @@ import os
 import csv
 import pandas as pd
 from datetime import datetime, timedelta
+import sys
 from typing import List, Dict
 import time
 
@@ -35,7 +36,7 @@ VARIATIONS = {
     "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
     "B": ["news"],                    # News (Geopolitical/Financial headlines)
     "C": ["market"],                  # Technicals (SMA, MACD, RSI)
-    "D": ["market", "news", "fundamentals"] # Full Debate setup
+    "D": ["market", "news", "fundamentals", "social"] # Full Debate setup
 }
 
 def generate_weekly_mondays(start_str: str, end_str: str) -> List[str]:
@@ -150,10 +151,21 @@ def main():
     config["online_tools"] = True
     config["data_dir"] = "./data_dir"
 
-    for var_id, analysts in VARIATIONS.items():
-        run_variation(var_id, analysts, trading_dates, config)
+    if len(sys.argv) > 1:
+        # Run specific variation provided as argument (e.g., python run_ablations.py A)
+        var_id = sys.argv[1].upper()
+        if var_id in VARIATIONS:
+            analysts = VARIATIONS[var_id]
+            run_variation(var_id, analysts, trading_dates, config)
+        else:
+            print(f"Error: Variation {var_id} not recognized. Must be one of A, B, C, D.")
+            sys.exit(1)
+    else:
+        # Run all variations sequentially
+        for var_id, analysts in VARIATIONS.items():
+            run_variation(var_id, analysts, trading_dates, config)
 
-    print("\nAll ablations completed.")
+    print("\nExecution completed.")
 
 if __name__ == "__main__":
     main()
