@@ -3,12 +3,13 @@
 #SBATCH --output=runs/ablations_%A/run.out
 #SBATCH --error=runs/ablations_%A/run.err
 #SBATCH --time=48:00:00
-#SBATCH --partition=gpu
+#SBATCH --partition=long
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --gpus=h100-96:1
-#SBATCH --mem=700G
-
+#SBATCH --mem=64G
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=ivan.lee@u.nus.edu
+#
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Running: Multi-Agent Ablations (A, B, C, D)"

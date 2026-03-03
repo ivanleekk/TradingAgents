@@ -35,7 +35,7 @@ VARIATIONS = {
     "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
     "B": ["news"],                    # News (Geopolitical/Financial headlines)
     "C": ["market"],                  # Technicals (SMA, MACD, RSI)
-    "D": ["market", "news", "fundamentals", "social"] # Full Debate setup
+    "D": ["market", "news", "fundamentals"] # Full Debate setup
 }
 
 def generate_weekly_mondays(start_str: str, end_str: str) -> List[str]:
