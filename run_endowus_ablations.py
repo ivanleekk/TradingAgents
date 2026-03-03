@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict
 import time
 import concurrent.futures
-from tenacity import retry, wait_exponential, stop_after_attempt, retry_if_exception_type
+from tenacity import retry, wait_exponential, stop_after_attempt
 
 from dotenv import load_dotenv
 from tradingagents.graph.trading_graph import TradingAgentsGraph
