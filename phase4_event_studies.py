@@ -71,20 +71,29 @@ def plot_event(event_name, norm_window, output_dir):
     """Plots the normalized equity curves for a specific event window."""
     plt.figure(figsize=(10, 6))
 
-    styles = {
+    # Define base styles for the legacy standard portfolios if they appear
+    base_styles = {
         "Zero-View": {"color": "#9E9E9E", "lw": 2.0, "ls": "-"},
         "Human-BL": {"color": "#2196F3", "lw": 2.0, "ls": "-"},
-        "Systematic-BL": {"color": "red", "lw": 2.5, "ls": "-"},
-        "Endowus-60/40": {"color": "black", "lw": 2.5, "ls": "-"},
-        "LLM-BL-A": {"color": "#4CAF50", "lw": 2.0, "ls": "-"},
-        "LLM-BL-B": {"color": "#FF9800", "lw": 2.0, "ls": "-"},
-        "LLM-BL-C": {"color": "#9C27B0", "lw": 2.0, "ls": "-"},
-        "LLM-BL-D": {"color": "#F44336", "lw": 2.0, "ls": "-"},
     }
 
     for strategy in norm_window.columns:
-        s = styles.get(strategy, {"color": "black", "lw": 1.5, "ls": "-"})
-        plt.plot(norm_window.index, norm_window[strategy], label=strategy, **s)
+        if "Endowus_Actual" in strategy:
+            # Render the actual funds as dashed lines with lower alpha so they form a "background" spectrum
+            plt.plot(norm_window.index, norm_window[strategy], label=strategy.replace("Endowus_Actual_", "Actual "), ls="--", lw=1.5, alpha=0.7)
+        elif strategy == "Endowus-60/40":
+            # Our proxy benchmark
+            plt.plot(norm_window.index, norm_window[strategy], label="Proxy 60/40 Benchmark", color="black", lw=2.5, ls="-")
+        elif strategy == "Systematic-BL":
+            # Our systematic baseline
+            plt.plot(norm_window.index, norm_window[strategy], label="Systematic Baseline", color="red", lw=2.5, ls="-")
+        elif "LLM-BL" in strategy:
+            # Our AI portfolios
+            plt.plot(norm_window.index, norm_window[strategy], label=strategy, lw=2.0, ls="-")
+        else:
+            # Legacy or unknown strategies
+            s = base_styles.get(strategy, {"color": "black", "lw": 1.5, "ls": "-"})
+            plt.plot(norm_window.index, norm_window[strategy], label=strategy, **s)
 
     plt.title(f"{event_name} (Normalized to 100)", fontsize=14, fontweight="bold")
     plt.ylabel("Normalized Value")
