@@ -74,6 +74,8 @@ def plot_event(event_name, norm_window, output_dir):
     styles = {
         "Zero-View": {"color": "#9E9E9E", "lw": 2.0, "ls": "-"},
         "Human-BL": {"color": "#2196F3", "lw": 2.0, "ls": "-"},
+        "Systematic-BL": {"color": "red", "lw": 2.5, "ls": "-"},
+        "Endowus-60/40": {"color": "black", "lw": 2.5, "ls": "-"},
         "LLM-BL-A": {"color": "#4CAF50", "lw": 2.0, "ls": "-"},
         "LLM-BL-B": {"color": "#FF9800", "lw": 2.0, "ls": "-"},
         "LLM-BL-C": {"color": "#9C27B0", "lw": 2.0, "ls": "-"},
@@ -136,12 +138,38 @@ def main():
     print("  Stress Testing & Event Studies Engine")
     print("=" * 60)
 
+    # First load standard BL equity curves if available
     curves_path = "results/bl_equity_curves.csv"
-    if not os.path.exists(curves_path):
-        print(f"Error: Could not find {curves_path}. Please run bl_portfolio_engine.py first.")
+    if os.path.exists(curves_path):
+        df_bl = pd.read_csv(curves_path, index_col=0, parse_dates=True)
+    else:
+        df_bl = pd.DataFrame()
+
+    # Load endowus systematic curves if available
+    endowus_path = "results/endowus_systematic_equity_curves.csv"
+    if os.path.exists(endowus_path):
+        df_endowus = pd.read_csv(endowus_path, index_col=0, parse_dates=True)
+    else:
+        df_endowus = pd.DataFrame()
+
+    if df_bl.empty and df_endowus.empty:
+        print(f"Error: Could not find any curves data. Run bl_portfolio_engine.py or systematic_bl_baseline.py first.")
         return
 
-    df = pd.read_csv(curves_path, index_col=0, parse_dates=True)
+    # Combine dataframes for plotting everything
+    if not df_bl.empty and not df_endowus.empty:
+        # Align indexes and combine columns, dropping overlapping duplicates
+        df = df_bl.join(df_endowus, how="outer", rsuffix="_endowus")
+
+        # If there are overlapping columns, prioritize the endowus ones as they have the updated logic
+        for col in df_endowus.columns:
+            if f"{col}_endowus" in df.columns:
+                df[col] = df[f"{col}_endowus"]
+                df = df.drop(columns=[f"{col}_endowus"])
+    elif not df_endowus.empty:
+        df = df_endowus
+    else:
+        df = df_bl
 
     output_dir = "results/event_studies"
     os.makedirs(output_dir, exist_ok=True)

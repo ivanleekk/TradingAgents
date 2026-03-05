@@ -515,9 +515,15 @@ def main():
             curve, wlog = run_systematic_backtest(weekly_prices, weekly_exec_prices, daily_close, fred_data)
         else:
             # We filter out DX-Y.NYB for endowus engine backtest
+            # AND we must slice it exactly to the START_DATE to END_DATE window
             run_weekly = weekly_prices[[t for t in list(ENDOWUS_WEIGHTS.keys()) if t in weekly_prices.columns]]
             run_exec = weekly_exec_prices[[t for t in list(ENDOWUS_WEIGHTS.keys()) if t in weekly_exec_prices.columns]]
             run_daily = daily_close[[t for t in list(ENDOWUS_WEIGHTS.keys()) if t in daily_close.columns]]
+
+            # Align dates to the backtest window
+            run_weekly = run_weekly[(run_weekly.index >= pd.to_datetime(START_DATE)) & (run_weekly.index <= pd.to_datetime(END_DATE))]
+            run_exec = run_exec[(run_exec.index >= pd.to_datetime(START_DATE)) & (run_exec.index <= pd.to_datetime(END_DATE))]
+
             curve, wlog = run_endowus_backtest(name, sigs, run_weekly, run_exec, run_daily)
 
         curves[name] = curve
