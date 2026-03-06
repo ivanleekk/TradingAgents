@@ -26,8 +26,10 @@ from datetime import datetime
 
 EVENTS = {
     "COVID-19 Crash & Rebound": ("2020-02-01", "2020-05-31"),
+    "The Emerging Market Divergence": ("2021-08-01", "2021-12-31"),
     "The Inflation Print Shock": ("2021-11-01", "2022-01-31"),
     "Russia-Ukraine Invasion": ("2022-02-01", "2022-04-30"),
+    "The BOJ Yield Curve Surprise": ("2022-12-01", "2023-01-31"),
     "Regional Banking Crisis": ("2023-03-01", "2023-05-31"),
 }
 
@@ -71,9 +73,9 @@ def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=No
             # We need returns for regressions
             str_returns = curve.pct_change().dropna()
 
-            # Align with FF data
+            # Align with weekly FF data
             common_idx = str_returns.index.intersection(ff_data.index)
-            if len(common_idx) > 10:  # Need sufficient datapoints
+            if len(common_idx) > 5:  # Need sufficient datapoints
                 y = str_returns.loc[common_idx] * 100 # convert to percentage to match FF data scale
                 ff = ff_data.loc[common_idx]
 
@@ -84,8 +86,7 @@ def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=No
                 try:
                     X_capm = sm.add_constant(ff['Mkt-RF'])
                     capm_model = sm.OLS(y_ex, X_capm).fit()
-                    capm_alpha = capm_model.params.get('const', np.nan) * 52 # Annualize weekly/daily depending on frequency (assumes weekly approximation or standard scaling)
-                    # Given curves are weekly, multiplying by 52 gives approx annual alpha
+                    capm_alpha = capm_model.params.get('const', np.nan) * 52 # Annualize weekly alpha
                 except: pass
 
                 # FF3: Mkt-RF, SMB, HML
@@ -117,24 +118,34 @@ def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=No
     return pd.DataFrame(metrics), norm_window
 
 def load_fama_french_data(start, end):
-    """Fetches Fama-French 5-Factor daily data and caches it."""
-    cache_path = "data/ff5_factors.csv"
+    """Fetches Fama-French 5-Factor daily data, compounds it to weekly (Monday), and caches it."""
+    cache_path = "data/ff5_factors_weekly.csv"
     if os.path.exists(cache_path):
-        ff = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        ff_weekly = pd.read_csv(cache_path, index_col=0, parse_dates=True)
         # Verify it covers our needed range
-        if not ff.empty and ff.index[0] <= pd.to_datetime(start) and ff.index[-1] >= pd.to_datetime(end):
-            return ff
+        if not ff_weekly.empty and ff_weekly.index[0] <= pd.to_datetime(start) and ff_weekly.index[-1] >= pd.to_datetime(end):
+            return ff_weekly
 
-    print("Fetching Fama-French 5-Factor data...")
+    print("Fetching and compounding Fama-French 5-Factor data to weekly...")
     try:
         # F-F_Research_Data_5_Factors_2x3_daily is standard for FF5
         ff_dict = web.DataReader('F-F_Research_Data_5_Factors_2x3_daily', 'famafrench', start, end)
-        ff = ff_dict[0]
+        ff_daily = ff_dict[0]
+
+        # FF data is in percentages. Convert to decimals, add 1 for compounding
+        ff_daily = (ff_daily / 100.0) + 1.0
+
+        # Resample to W-MON. Use product to geometrically link daily returns, then subtract 1
+        ff_weekly = ff_daily.resample("W-MON", label="left", closed="left").prod() - 1.0
+
+        # Convert back to percentages to match standard FF format used in regressions
+        ff_weekly = ff_weekly * 100.0
+
         os.makedirs("data", exist_ok=True)
-        ff.to_csv(cache_path)
-        return ff
+        ff_weekly.to_csv(cache_path)
+        return ff_weekly
     except Exception as e:
-        print(f"Error fetching FF data: {e}")
+        print(f"Error fetching/compounding FF data: {e}")
         return None
 
 def plot_event(event_name, norm_window, output_dir):

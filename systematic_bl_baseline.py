@@ -186,17 +186,21 @@ def generate_signals(date: pd.Timestamp, prices: pd.DataFrame, fred_data: dict) 
         weak_usd_mask = sma50_5yr < sma200_5yr
 
         spy_5yr = hist_prices["SPY"].dropna().tail(252*5)
-        em_pac_basket = (hist_prices["EEM"] + hist_prices["VPL"] + hist_prices["EMB"]).dropna() / 3
-        em_pac_5yr = em_pac_basket.tail(252*5)
 
-        common_idx = spy_5yr.index.intersection(em_pac_5yr.index).intersection(dxy_5yr.index)
+        # We need the daily returns of EEM, VPL, EMB to create an equal-weighted return series, not a price-weighted series
+        eem_ret = hist_prices["EEM"].dropna().pct_change().tail(252*5)
+        vpl_ret = hist_prices["VPL"].dropna().pct_change().tail(252*5)
+        emb_ret = hist_prices["EMB"].dropna().pct_change().tail(252*5)
+
+        em_pac_ret_basket = (eem_ret + vpl_ret + emb_ret).dropna() / 3
+
+        common_idx = spy_5yr.index.intersection(em_pac_ret_basket.index).intersection(dxy_5yr.index)
         spy_common = spy_5yr.loc[common_idx]
-        em_common = em_pac_5yr.loc[common_idx]
+        em_ret = em_pac_ret_basket.loc[common_idx]
         strong_mask = strong_usd_mask.loc[common_idx]
         weak_mask = weak_usd_mask.loc[common_idx]
 
         spy_ret = spy_common.pct_change()
-        em_ret = em_common.pct_change()
 
         p_row = {a: 0 for a in list(ENDOWUS_WEIGHTS.keys())}
 
