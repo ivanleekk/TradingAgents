@@ -27,7 +27,12 @@ import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from pypfopt import BlackLittermanModel, risk_models, expected_returns, EfficientFrontier
+from pypfopt import (
+    BlackLittermanModel,
+    risk_models,
+    expected_returns,
+    EfficientFrontier,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -40,17 +45,95 @@ LOOKBACK_WEEKS = 52
 RISK_FREE_RATE = 0.04
 WEEKS_PER_YEAR = 52
 
-# Endowus Flagship Target Weights
-ENDOWUS_WEIGHTS = {
-    "URTH": 0.285, # Global Developed Equity
+# Fallback proxy weights if raw Endowus composition cannot be loaded.
+DEFAULT_ENDOWUS_WEIGHTS = {
+    "URTH": 0.285,  # Global Developed Equity
     "SPY": 0.174,  # US S&P 500
     "EEM": 0.093,  # Emerging Markets Equity
     "VPL": 0.048,  # Pacific Basin Small/Mid Cap
-    "BNDW": 0.230, # Global Aggregate Bond
+    "BNDW": 0.230,  # Global Aggregate Bond
     "AGG": 0.070,  # US Aggregate Bond
     "EMB": 0.060,  # Emerging Markets Government Bond
     "BSV": 0.040,  # Short-Term Global Bond
 }
+
+# Runtime universe; overwritten from Endowus 60|40 raw composition in main().
+ENDOWUS_WEIGHTS = DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+
+def load_endowus_6040_weights(
+    raw_json_path: str = "data/endowus_raw.json",
+    id_to_yahoo_csv_path: str = "data/endowus_yfinance/instrument_id_to_yahoo.csv",
+) -> dict[str, float]:
+    """Load 60|40 portfolio target weights and Yahoo symbols from Endowus raw data."""
+    if not os.path.exists(raw_json_path):
+        print(
+            f"[WARN] Endowus raw data not found at {raw_json_path}; using fallback weights."
+        )
+        return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+    if not os.path.exists(id_to_yahoo_csv_path):
+        print(
+            f"[WARN] Instrument to Yahoo mapping not found at {id_to_yahoo_csv_path}; "
+            "using fallback weights."
+        )
+        return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+    try:
+        with open(raw_json_path, "r") as f:
+            all_portfolios = json.load(f)
+
+        portfolio_6040 = next(
+            (p for p in all_portfolios if p.get("shortName") == "60 | 40"), None
+        )
+        if portfolio_6040 is None:
+            print("[WARN] Could not find shortName '60 | 40'; using fallback weights.")
+            return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+        funds = portfolio_6040.get("portfolioUnderlyingPage", {}).get(
+            "underlyingFundsCards", []
+        )
+        if not funds:
+            print("[WARN] 60|40 underlyingFundsCards empty; using fallback weights.")
+            return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+        mapping_df = pd.read_csv(id_to_yahoo_csv_path)
+        id_to_symbol = {
+            str(row["instrumentId"]): str(row["yahooSymbol"])
+            for _, row in mapping_df.iterrows()
+            if str(row.get("yahooSymbol", "")).strip()
+            and str(row.get("status", "")).startswith("resolved")
+        }
+
+        weights: dict[str, float] = {}
+        dropped = 0
+        for fund in funds:
+            instrument_id = str(fund.get("instrumentId", "")).strip()
+            target_weight = float(fund.get("targetWeight", 0.0))
+            symbol = id_to_symbol.get(instrument_id)
+
+            if not symbol or target_weight <= 0:
+                dropped += 1
+                continue
+
+            weights[symbol] = weights.get(symbol, 0.0) + target_weight
+
+        total_weight = sum(weights.values())
+        if not weights or total_weight <= 0:
+            print("[WARN] 60|40 produced no mapped symbols; using fallback weights.")
+            return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+        normalized_weights = {t: w / total_weight for t, w in weights.items()}
+        print(
+            f"Loaded Endowus 60|40 universe: {len(normalized_weights)} tickers "
+            f"(dropped {dropped} unmapped funds)."
+        )
+        return normalized_weights
+
+    except Exception as e:
+        print(f"[WARN] Failed loading 60|40 composition ({e}); using fallback weights.")
+        return DEFAULT_ENDOWUS_WEIGHTS.copy()
+
 
 def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
     """Load JSON signals outputted by the LLM trader for the Endowus universe."""
@@ -71,8 +154,9 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
             confidences = []
 
             import re
+
             for idx, row in df.iterrows():
-                decision_str = str(row['decision']).strip()
+                decision_str = str(row["decision"]).strip()
 
                 # Strip markdown blocks if present
                 if decision_str.startswith("```json"):
@@ -85,13 +169,13 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
 
                 try:
                     data = json.loads(decision_str)
-                    ret_str = str(data.get("Target_Return_30d", "")).replace('%', '')
+                    ret_str = str(data.get("Target_Return_30d", "")).replace("%", "")
 
                     if not ret_str:
                         target_returns.append(None)
                     else:
                         ret = float(ret_str) / 100.0
-                        annual_ret = (1 + ret)**(365/30) - 1
+                        annual_ret = (1 + ret) ** (365 / 30) - 1
                         target_returns.append(annual_ret)
 
                     conf = float(data.get("Confidence_Score", 5))
@@ -100,8 +184,8 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
                     target_returns.append(None)
                     confidences.append(5.0)
 
-            df['target_return'] = target_returns
-            df['confidence'] = confidences
+            df["target_return"] = target_returns
+            df["confidence"] = confidences
             frames.append(df[["Date", "Ticker", "target_return", "confidence"]])
         except Exception as e:
             print(f"Error parsing {fp}: {e}")
@@ -111,8 +195,10 @@ def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
 
     return pd.concat(frames, ignore_index=True)
 
+
 def to_weekly_monday(df: pd.DataFrame) -> pd.DataFrame:
     return df.resample("W-MON", label="left", closed="left").last()
+
 
 def download_prices(tickers: list[str], start: str, end: str):
     print(f"Downloading prices for {len(tickers)} tickers …")
@@ -132,9 +218,14 @@ def download_prices(tickers: list[str], start: str, end: str):
 
     close_df.index = pd.to_datetime(close_df.index)
     open_df.index = pd.to_datetime(open_df.index)
-    return close_df.sort_index().dropna(how="all"), open_df.sort_index().dropna(how="all")
+    return close_df.sort_index().dropna(how="all"), open_df.sort_index().dropna(
+        how="all"
+    )
 
-def get_execution_prices(daily_open: pd.DataFrame, weekly_dates: pd.DatetimeIndex) -> pd.DataFrame:
+
+def get_execution_prices(
+    daily_open: pd.DataFrame, weekly_dates: pd.DatetimeIndex
+) -> pd.DataFrame:
     trading_days = daily_open.index
     rows = {}
     for monday in weekly_dates:
@@ -149,11 +240,22 @@ def get_execution_prices(daily_open: pd.DataFrame, weekly_dates: pd.DatetimeInde
     exec_df.index.name = "Date"
     return exec_df
 
+
+def get_latest_price_on_or_before(
+    data: pd.DataFrame, ticker: str, as_of: pd.Timestamp
+) -> float | None:
+    """Return latest non-null price at or before as_of for ticker."""
+    if ticker not in data.columns:
+        return None
+
+    hist = data.loc[:as_of, ticker].dropna()
+    if hist.empty:
+        return None
+    return float(hist.iloc[-1])
+
+
 def compute_bl_weights(
-    active_set: list[str],
-    price_history: pd.DataFrame,
-    views: dict,
-    confidences: dict
+    active_set: list[str], price_history: pd.DataFrame, views: dict, confidences: dict
 ) -> dict[str, float]:
     """
     Computes Black-Litterman weights.
@@ -165,11 +267,13 @@ def compute_bl_weights(
     target_weights_dict = {t: ENDOWUS_WEIGHTS.get(t, 0.0) for t in active_set}
     total_w = sum(target_weights_dict.values())
     if total_w > 0:
-        target_weights = np.array([target_weights_dict[t]/total_w for t in active_set])
-        fallback_weights = {t: target_weights_dict[t]/total_w for t in active_set}
+        target_weights = np.array(
+            [target_weights_dict[t] / total_w for t in active_set]
+        )
+        fallback_weights = {t: target_weights_dict[t] / total_w for t in active_set}
     else:
         # Extreme fallback
-        fallback_weights = {t: 1.0/len(active_set) for t in active_set}
+        fallback_weights = {t: 1.0 / len(active_set) for t in active_set}
         target_weights = np.array(list(fallback_weights.values()))
 
     if sub.shape[0] < 10 or len(active_set) < 2:
@@ -180,19 +284,27 @@ def compute_bl_weights(
         S = risk_models.CovarianceShrinkage(sub, frequency=252).ledoit_wolf()
 
         # Calculate market-implied returns (prior) assuming Endowus is the equilibrium
-        delta = 2.5 # Risk aversion parameter
+        delta = 2.5  # Risk aversion parameter
         # market implied returns pi = delta * S * w
         market_prior = delta * S.dot(target_weights)
 
         # Format views. If LLM gave None, fallback to the calculated market prior
-        Q = pd.Series({
-            t: views.get(t) if views.get(t) is not None else market_prior.get(t, 0.05)
-            for t in active_set
-        })
+        Q = pd.Series(
+            {
+                t: (
+                    views.get(t)
+                    if views.get(t) is not None
+                    else market_prior.get(t, 0.05)
+                )
+                for t in active_set
+            }
+        )
 
         # Construct confidence matrix Omega (diagonal)
         # Scale uncertainty inversely to confidence (1-10)
-        omega = np.diag([S.loc[t, t] * (1.1 - (confidences.get(t, 5) / 10.0)) for t in active_set])
+        omega = np.diag(
+            [S.loc[t, t] * (1.1 - (confidences.get(t, 5) / 10.0)) for t in active_set]
+        )
 
         # Black-Litterman Model
         bl = BlackLittermanModel(S, pi=market_prior, absolute_views=Q, omega=omega)
@@ -216,6 +328,7 @@ def compute_bl_weights(
         print(f"[DEBUG] BL Math failed for {active_set}: {e}")
         return fallback_weights
 
+
 class Portfolio:
     def __init__(self, initial_equity: float):
         self.cash = initial_equity
@@ -237,7 +350,9 @@ class Portfolio:
                 proceeds += gross
         return proceeds
 
-    def buy_target_weights(self, weights: dict[str, float], prices: dict[str, float], total_equity: float):
+    def buy_target_weights(
+        self, weights: dict[str, float], prices: dict[str, float], total_equity: float
+    ):
         target_tickers = set(weights.keys())
         current_tickers = set(t for t, q in self.shares.items() if q > 0)
 
@@ -263,7 +378,8 @@ class Portfolio:
             desired_val = target_dollars.get(t, 0.0)
             if desired_val > current_val + 1e-6:
                 spend = min(desired_val - current_val, self.cash)
-                if spend <= 0: continue
+                if spend <= 0:
+                    continue
                 gross = spend
                 fee = gross * TRANSACTION_COST
                 net_spend = gross + fee
@@ -272,12 +388,13 @@ class Portfolio:
                 self.shares[t] = self.shares.get(t, 0.0) + actual_gross / prices[t]
                 self.cash -= net_spend
 
+
 def run_endowus_backtest(
     strategy: str,
     signals_df: pd.DataFrame,
     weekly_prices: pd.DataFrame,
     weekly_exec_prices: pd.DataFrame,
-    daily_prices: pd.DataFrame
+    daily_prices: pd.DataFrame,
 ) -> tuple[pd.Series, pd.DataFrame]:
 
     port = Portfolio(INITIAL_EQUITY)
@@ -288,19 +405,24 @@ def run_endowus_backtest(
 
     dates = weekly_prices.index.intersection(weekly_exec_prices.index)
     if not signals_df.empty:
-        signal_dates = pd.DatetimeIndex(signals_df['Date'].unique())
+        signal_dates = pd.DatetimeIndex(signals_df["Date"].unique())
         dates = dates.intersection(signal_dates)
 
     for date in dates:
-        price_row = weekly_prices.loc[date]
-        exec_row = weekly_exec_prices.loc[date]
-
-        val_prices = {t: float(price_row[t]) for t in tickers if pd.notna(price_row.get(t)) and float(price_row.get(t, 0)) > 0}
-        exec_prices = {t: float(exec_row[t]) for t in tickers if pd.notna(exec_row.get(t)) and float(exec_row.get(t, 0)) > 0}
+        val_prices: dict[str, float] = {}
+        exec_prices: dict[str, float] = {}
 
         for t in tickers:
-            if t not in exec_prices and t in val_prices:
-                exec_prices[t] = val_prices[t]
+            val_p = get_latest_price_on_or_before(weekly_prices, t, date)
+            if val_p is None or val_p <= 0:
+                continue
+            val_prices[t] = val_p
+
+            exec_p = get_latest_price_on_or_before(weekly_exec_prices, t, date)
+            if exec_p is None or exec_p <= 0:
+                # Fallback to valuation price if execution series has no value yet.
+                exec_p = val_p
+            exec_prices[t] = exec_p
 
         active_set = list(exec_prices.keys())
 
@@ -311,16 +433,20 @@ def run_endowus_backtest(
             # Just use static target weights, normalized for active assets
             target_weights_dict = {t: ENDOWUS_WEIGHTS.get(t, 0.0) for t in active_set}
             total_w = sum(target_weights_dict.values())
-            weights = {t: target_weights_dict[t]/total_w for t in active_set} if total_w > 0 else {}
+            weights = (
+                {t: target_weights_dict[t] / total_w for t in active_set}
+                if total_w > 0
+                else {}
+            )
         else:
             # LLM strategies: fetch from signals and run Black-Litterman
             if not signals_df.empty:
-                day_signals = signals_df[signals_df['Date'] == date]
+                day_signals = signals_df[signals_df["Date"] == date]
                 for _, row in day_signals.iterrows():
-                    t = row['Ticker']
+                    t = row["Ticker"]
                     if t in active_set:
-                        views[t] = row['target_return']
-                        confidences[t] = row['confidence']
+                        views[t] = row["target_return"]
+                        confidences[t] = row["confidence"]
 
             lookback_start = date - pd.Timedelta(weeks=LOOKBACK_WEEKS)
             history = daily_prices.loc[lookback_start:date, :]
@@ -336,9 +462,11 @@ def run_endowus_backtest(
     weights_df.index.name = "Date"
     return pd.Series(equity_curve, name=strategy).sort_index(), weights_df
 
+
 def compute_metrics(equity: pd.Series, name: str = "") -> dict:
     eq = equity.dropna()
-    if len(eq) < 2: return {}
+    if len(eq) < 2:
+        return {}
 
     weekly_returns = eq.pct_change().dropna()
     total_return = (eq.iloc[-1] / eq.iloc[0]) - 1
@@ -346,7 +474,11 @@ def compute_metrics(equity: pd.Series, name: str = "") -> dict:
     ann_return = (1 + total_return) ** (1 / n_years) - 1
 
     excess = weekly_returns - RISK_FREE_RATE / WEEKS_PER_YEAR
-    sharpe = ((excess.mean() / excess.std()) * np.sqrt(WEEKS_PER_YEAR) if excess.std() > 0 else 0.0)
+    sharpe = (
+        (excess.mean() / excess.std()) * np.sqrt(WEEKS_PER_YEAR)
+        if excess.std() > 0
+        else 0.0
+    )
 
     rolling_max = eq.cummax()
     drawdowns = (eq - rolling_max) / rolling_max
@@ -359,12 +491,13 @@ def compute_metrics(equity: pd.Series, name: str = "") -> dict:
         "Ann. Return": f"{ann_return:.2%}",
         "Sharpe Ratio": f"{sharpe:.3f}",
         "Max Drawdown": f"{max_dd:.2%}",
-        "Calmar Ratio": f"{calmar:.3f}"
+        "Calmar Ratio": f"{calmar:.3f}",
     }
+
 
 def load_endowus_historical(curves: dict, metrics_list: list):
     """Loads actual Endowus historical NAVs and exact metrics from the provided JSON dump."""
-    json_path = os.path.join("data", "endowus_historical.json")
+    json_path = os.path.join("data", "endowus_raw.json")
     if not os.path.exists(json_path):
         print("Historical Endowus data not found.")
         return
@@ -385,7 +518,9 @@ def load_endowus_historical(curves: dict, metrics_list: list):
                 s = pd.Series(values, index=dates)
 
                 # Filter to backtest window
-                mask = (s.index >= pd.to_datetime(START_DATE)) & (s.index <= pd.to_datetime(END_DATE))
+                mask = (s.index >= pd.to_datetime(START_DATE)) & (
+                    s.index <= pd.to_datetime(END_DATE)
+                )
                 s = s[mask]
 
                 if not s.empty:
@@ -399,19 +534,26 @@ def load_endowus_historical(curves: dict, metrics_list: list):
             if perf:
                 ann_return = perf.get("annualisedReturn", 0.0)
                 max_dd = perf.get("maxDrawDown", {}).get("drawDown", 0.0)
-                sharpe = 0.0 # They didn't provide Sharpe, we can leave 0 or calculate it
+                sharpe = (
+                    0.0  # They didn't provide Sharpe, we can leave 0 or calculate it
+                )
 
-                metrics_list.append({
-                    "Strategy": name,
-                    "Ann. Return": f"{ann_return:.2%}",
-                    "Sharpe Ratio": f"N/A", # Provided dump doesn't have it
-                    "Max Drawdown": f"{max_dd:.2%}",
-                    "Calmar Ratio": f"{ann_return / abs(max_dd) if max_dd else 0:.3f}"
-                })
+                metrics_list.append(
+                    {
+                        "Strategy": name,
+                        "Ann. Return": f"{ann_return:.2%}",
+                        "Sharpe Ratio": f"N/A",  # Provided dump doesn't have it
+                        "Max Drawdown": f"{max_dd:.2%}",
+                        "Calmar Ratio": f"{ann_return / abs(max_dd) if max_dd else 0:.3f}",
+                    }
+                )
     except Exception as e:
         print(f"Error loading historical Endowus data: {e}")
 
-def plot_equity_curves(curves_df: pd.DataFrame, output_path: str = "results/endowus_comparison_plot.png"):
+
+def plot_equity_curves(
+    curves_df: pd.DataFrame, output_path: str = "results/endowus_comparison_plot.png"
+):
     """Plots the actual Endowus funds alongside our simulated portfolios."""
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
 
@@ -421,15 +563,33 @@ def plot_equity_curves(curves_df: pd.DataFrame, output_path: str = "results/endo
     for column in curves_df.columns:
         if "Endowus_Actual" in column:
             # Render the actual funds as dashed lines with lower alpha so they form a "background" spectrum
-            ax.plot(curves_df.index, curves_df[column], label=column.replace("Endowus_Actual_", "Actual "), ls="--", lw=1.5, alpha=0.7)
+            ax.plot(
+                curves_df.index,
+                curves_df[column],
+                label=column.replace("Endowus_Actual_", "Actual "),
+                ls="--",
+                lw=1.5,
+                alpha=0.7,
+            )
         elif column == "Endowus-60/40":
             # Our proxy benchmark
-            ax.plot(curves_df.index, curves_df[column], label="Proxy 60/40 Benchmark", color="black", lw=2.5, ls="-")
+            ax.plot(
+                curves_df.index,
+                curves_df[column],
+                label="Proxy 60/40 Benchmark",
+                color="black",
+                lw=2.5,
+                ls="-",
+            )
         elif "LLM-BL" in column:
             # Our AI portfolios
             ax.plot(curves_df.index, curves_df[column], label=column, lw=2.0, ls="-")
 
-    ax.set_title("AI Black-Litterman Portfolios vs Actual Endowus Flagship Funds (2020-2024)", fontsize=14, fontweight="bold")
+    ax.set_title(
+        "AI Black-Litterman Portfolios vs Actual Endowus Flagship Funds (2020-2024)",
+        fontsize=14,
+        fontweight="bold",
+    )
     ax.set_ylabel("Portfolio Value (Base $10,000)")
     ax.set_xlabel("Date")
 
@@ -439,7 +599,7 @@ def plot_equity_curves(curves_df: pd.DataFrame, output_path: str = "results/endo
     plt.xticks(rotation=45)
 
     # Place legend outside to not obscure the curves
-    ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left', framealpha=0.9)
+    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", framealpha=0.9)
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
@@ -447,15 +607,21 @@ def plot_equity_curves(curves_df: pd.DataFrame, output_path: str = "results/endo
     plt.close()
     print(f"Plot saved to {output_path}")
 
+
 def main():
     print("=" * 60)
     print("  Endowus Black-Litterman Portfolio Engine")
     print("=" * 60)
 
+    global ENDOWUS_WEIGHTS
+    ENDOWUS_WEIGHTS = load_endowus_6040_weights()
+
     tickers = list(ENDOWUS_WEIGHTS.keys())
+    print(f"Backtesting universe: {tickers}")
 
     daily_prices, daily_open = download_prices(tickers, START_DATE, END_DATE)
-
+    print(f"Downloaded price data with shape {daily_prices.shape}")
+    print(f"Price data columns: {daily_prices}")
     valid_tickers = [t for t in tickers if t in daily_prices.columns]
     daily_prices = daily_prices[valid_tickers]
     daily_open = daily_open[[t for t in valid_tickers if t in daily_open.columns]]
@@ -477,7 +643,7 @@ def main():
         ("LLM-BL-A", signals_A),
         ("LLM-BL-B", signals_B),
         ("LLM-BL-C", signals_C),
-        ("LLM-BL-D", signals_D)
+        ("LLM-BL-D", signals_D),
     ]
 
     for name, sigs in strategies:
@@ -486,7 +652,9 @@ def main():
             print(f"  Skipping {name} - no signal data.")
             continue
 
-        curve, wlog = run_endowus_backtest(name, sigs, weekly_prices, weekly_exec_prices, daily_prices)
+        curve, wlog = run_endowus_backtest(
+            name, sigs, weekly_prices, weekly_exec_prices, daily_prices
+        )
         curves[name] = curve
         weights_logs[name] = wlog
         print(f"  Final equity: ${curve.iloc[-1]:,.2f}")
@@ -498,7 +666,7 @@ def main():
 
     print("\n[Metrics Summary]")
     print("=" * 70)
-    summary = pd.DataFrame([m for m in metrics_list if m]) # Filter out any empties
+    summary = pd.DataFrame([m for m in metrics_list if m])  # Filter out any empties
     if not summary.empty:
         print(summary.to_string(index=False))
     print("=" * 70)
@@ -514,6 +682,7 @@ def main():
     plot_equity_curves(curves_df)
 
     print("Backtest complete. Results saved to results/ folder.")
+
 
 if __name__ == "__main__":
     main()
