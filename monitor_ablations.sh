@@ -10,12 +10,12 @@ if [ -z "$JOB_ID" ]; then
 
     # Try to find the most recently created runs array directory instead
     # The array folders look like runs/ablations_123456_0
-    LATEST_BASE_ID=$(ls -td runs/ablations_* 2>/dev/null | head -1 | grep -o 'ablations_[0-9]*' | grep -o '[0-9]*')
+    LATEST_BASE_ID=$(ls -td runs/endowus_ablations_* 2>/dev/null | head -1 | grep -o 'ablations_[0-9]*' | grep -o '[0-9]*')
 
     if [ -n "$LATEST_BASE_ID" ]; then
         echo "Found recent array job ID: $LATEST_BASE_ID"
         echo "Tailing logs for all array tasks..."
-        tail -f runs/ablations_${LATEST_BASE_ID}_*/run.out runs/ablations_${LATEST_BASE_ID}_*/run.err 2>/dev/null
+        tail -f runs/endowus_ablations_${LATEST_BASE_ID}_*/run.out runs/endowus_ablations_${LATEST_BASE_ID}_*/run.err 2>/dev/null
     else
         echo "No recent runs found in runs/ablations_*"
     fi
