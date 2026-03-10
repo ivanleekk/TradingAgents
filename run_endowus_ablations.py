@@ -49,12 +49,7 @@ ETFS = [
 
 # Event Windows (Core dates, padding will be added programmatically)
 EVENTS = {
-    "COVID-19 Crash": ("2020-02-01", "2020-05-31"),
-    "The Emerging Market Divergence": ("2021-08-01", "2021-12-31"),
-    "Inflation Shock": ("2021-11-01", "2022-01-31"),
-    "Russia-Ukraine Invasion": ("2022-02-01", "2022-04-30"),
-    "The BOJ Yield Curve Surprise": ("2022-12-01", "2023-01-31"),
-    "Regional Banking Crisis": ("2023-03-01", "2023-05-31"),
+    "ALL": ("2020-01-01", "2024-12-31"),
 }
 
 # Define the 4 Ablation Variations
@@ -69,7 +64,7 @@ VARIATIONS = {
 def generate_weekly_mondays(start_str: str, end_str: str) -> List[str]:
     """Generates a list of all Mondays between padded start and end date (inclusive)."""
     start_date = datetime.strptime(start_str, "%Y-%m-%d") - pd.DateOffset(months=5)
-    end_date = datetime.strptime(end_str, "%Y-%m-%d") + pd.DateOffset(months=5)
+    end_date = datetime.strptime(end_str, "%Y-%m-%d")
 
     # Find first Monday
     days_ahead = 0 - start_date.weekday()
