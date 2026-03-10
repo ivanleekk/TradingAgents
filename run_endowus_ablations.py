@@ -33,17 +33,17 @@ os.makedirs("results_endowus_D", exist_ok=True)
 ETFS = [
     "0P0001AF7U.SI",  # Dimensional Global Core Equity Fund
     "0P0000KYEE.SI",  # PIMCO GIS Global Bond Fund SGD-Hedged
-    "0P0001Q0TW.SI",  # iShares US Index Fund (IE) S&P 500
-    "0P0001PUM6.SI",  # iShares Developed World Index Fund (IE)
-    "0P0001OOJG.SI",  # Amundi Prime USA Fund
-    "0P0001ORCC.SI",  # Amundi Core Global Aggregate Bond SGD-Hedged
-    "0P0001K7ZY.SI",  # PIMCO GIS Income Fund SGD-Hedged
+    "SPY",  # iShares US Index Fund (IE) S&P 500
+    "^990100-USD-STRD",  # iShares Developed World Index Fund (IE)
+    "DE000SLA4YD9.SG",  # Amundi Prime USA Fund
+    "AGGG.L",  # Amundi Core Global Aggregate Bond SGD-Hedged
+    "IE0002461055.IR",  # PIMCO GIS Income Fund SGD-Hedged
     "0P0001AF7Z.SI",  # Dimensional Emerging Markets Large Cap Core Equity Fund
     "0P0001EQUE.SI",  # Dimensional Global Core Fixed Income Fund SGD-Hedged
     "0P0001EF2T.SI",  # Dimensional Pacific Basin Small Companies Fund
-    "0P0001PPV9.SI",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
-    "0P0001PPVI.SI",  # iShares Emerging Markets Government Bond Index Fund (IE)
-    "0P0001OO2F.SI",  # Amundi Core MSCI Emerging Markets Fund
+    "0P0001CC3M",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    "PEBIX",  # iShares Emerging Markets Government Bond Index Fund (IE)
+    "EIMI.L",  # Amundi Core MSCI Emerging Markets Fund
     "0P0001DWI0.SI",  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
 ]
 

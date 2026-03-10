@@ -37,7 +37,7 @@ from pypfopt import (
 warnings.filterwarnings("ignore")
 
 DATA_DIR = "data"
-START_DATE = "2020-01-01"
+START_DATE = "2019-01-01"
 END_DATE = "2024-12-31"
 INITIAL_EQUITY = 10_000.0
 TRANSACTION_COST = 0.001
@@ -59,6 +59,80 @@ DEFAULT_ENDOWUS_WEIGHTS = {
 
 # Runtime universe; overwritten from Endowus 60|40 raw composition in main().
 ENDOWUS_WEIGHTS = DEFAULT_ENDOWUS_WEIGHTS.copy()
+
+# Adjustable class-level allocation target used by optimization outputs.
+TARGET_EQUITY_ALLOCATION = 0.80
+
+# Default class map for the fallback ETF universe.
+EQUITY_ASSETS = ["URTH", "SPY", "EEM", "VPL"]
+FIXED_INCOME_ASSETS = ["BNDW", "AGG", "EMB", "BSV"]
+
+
+def enforce_class_allocation_targets(
+    weights: dict[str, float],
+    active_set: list[str],
+    equity_assets: list[str] | None = None,
+    fixed_income_assets: list[str] | None = None,
+    target_equity_allocation: float = TARGET_EQUITY_ALLOCATION,
+) -> dict[str, float]:
+    """Rescale long-only weights so class totals match target equity/fixed-income split."""
+    if not active_set:
+        return {}
+
+    eq_assets = set(equity_assets or EQUITY_ASSETS)
+    fi_assets = set(fixed_income_assets or FIXED_INCOME_ASSETS)
+
+    base = {t: max(float(weights.get(t, 0.0)), 0.0) for t in active_set}
+    base_sum = sum(base.values())
+    if base_sum <= 0:
+        base = {t: 1.0 / len(active_set) for t in active_set}
+    else:
+        base = {t: w / base_sum for t, w in base.items()}
+
+    eq_tickers = [t for t in active_set if t in eq_assets]
+    fi_tickers = [t for t in active_set if t in fi_assets]
+    other_tickers = [t for t in active_set if t not in eq_assets and t not in fi_assets]
+
+    if not eq_tickers and not fi_tickers:
+        return base
+
+    target_eq = min(max(float(target_equity_allocation), 0.0), 1.0)
+    target_fi = 1.0 - target_eq
+
+    if not eq_tickers:
+        target_eq, target_fi = 0.0, 1.0
+    if not fi_tickers:
+        target_eq, target_fi = 1.0, 0.0
+
+    adjusted = {t: 0.0 for t in active_set}
+
+    eq_sum = sum(base[t] for t in eq_tickers)
+    fi_sum = sum(base[t] for t in fi_tickers)
+
+    if eq_tickers:
+        if eq_sum > 0:
+            for t in eq_tickers:
+                adjusted[t] = (base[t] / eq_sum) * target_eq
+        else:
+            for t in eq_tickers:
+                adjusted[t] = target_eq / len(eq_tickers)
+
+    if fi_tickers:
+        if fi_sum > 0:
+            for t in fi_tickers:
+                adjusted[t] = (base[t] / fi_sum) * target_fi
+        else:
+            for t in fi_tickers:
+                adjusted[t] = target_fi / len(fi_tickers)
+
+    for t in other_tickers:
+        adjusted[t] = 0.0
+
+    total = sum(adjusted.values())
+    if total > 0:
+        adjusted = {t: w / total for t, w in adjusted.items()}
+
+    return adjusted
 
 
 def load_endowus_6040_weights(
@@ -276,6 +350,8 @@ def compute_bl_weights(
         fallback_weights = {t: 1.0 / len(active_set) for t in active_set}
         target_weights = np.array(list(fallback_weights.values()))
 
+    fallback_weights = enforce_class_allocation_targets(fallback_weights, active_set)
+
     if sub.shape[0] < 10 or len(active_set) < 2:
         return fallback_weights
 
@@ -320,9 +396,11 @@ def compute_bl_weights(
             ef.min_volatility()
 
         cleaned = ef.clean_weights()
-        weights = {t: w for t, w in cleaned.items() if w > 1e-6}
+        weights = {str(t): float(w) for t, w in cleaned.items() if w > 1e-6}
+        if not weights:
+            return fallback_weights
 
-        return weights if weights else fallback_weights
+        return enforce_class_allocation_targets(weights, active_set)
 
     except Exception as e:
         print(f"[DEBUG] BL Math failed for {active_set}: {e}")
@@ -337,6 +415,21 @@ class Portfolio:
     def total_equity(self, prices: dict[str, float]) -> float:
         mv = sum(self.shares.get(t, 0.0) * prices.get(t, 0.0) for t in self.shares)
         return self.cash + mv
+
+    def current_weights(self, prices: dict[str, float]) -> dict[str, float]:
+        total = self.total_equity(prices)
+        if total <= 0:
+            return {}
+
+        weights: dict[str, float] = {}
+        for t, qty in self.shares.items():
+            px = prices.get(t, 0.0)
+            if qty <= 0 or px <= 0:
+                continue
+            w = (qty * px) / total
+            if w > 1e-8:
+                weights[t] = w
+        return weights
 
     def liquidate(self, tickers_to_sell: list[str], prices: dict[str, float]) -> float:
         proceeds = 0.0
@@ -395,11 +488,15 @@ def run_endowus_backtest(
     weekly_prices: pd.DataFrame,
     weekly_exec_prices: pd.DataFrame,
     daily_prices: pd.DataFrame,
+    rebalance_policy: str = "weekly",
+    log_realized_weights: bool = False,
 ) -> tuple[pd.Series, pd.DataFrame]:
 
     port = Portfolio(INITIAL_EQUITY)
     equity_curve = {}
     weights_log = {}
+    last_target_weights: dict[str, float] = {}
+    has_rebalanced_once = False
 
     tickers = list(ENDOWUS_WEIGHTS.keys())
 
@@ -425,38 +522,66 @@ def run_endowus_backtest(
             exec_prices[t] = exec_p
 
         active_set = list(exec_prices.keys())
+        full_universe_available = len(active_set) == len(tickers)
 
-        views = {}
-        confidences = {}
-
-        if strategy == "Endowus-60/40":
-            # Just use static target weights, normalized for active assets
-            target_weights_dict = {t: ENDOWUS_WEIGHTS.get(t, 0.0) for t in active_set}
-            total_w = sum(target_weights_dict.values())
-            weights = (
-                {t: target_weights_dict[t] / total_w for t in active_set}
-                if total_w > 0
-                else {}
-            )
+        if rebalance_policy == "weekly":
+            should_rebalance = True
+        elif rebalance_policy == "full-universe-only":
+            should_rebalance = full_universe_available
+        elif rebalance_policy == "buy-and-hold":
+            should_rebalance = (not has_rebalanced_once) and full_universe_available
         else:
-            # LLM strategies: fetch from signals and run Black-Litterman
-            if not signals_df.empty:
-                day_signals = signals_df[signals_df["Date"] == date]
-                for _, row in day_signals.iterrows():
-                    t = row["Ticker"]
-                    if t in active_set:
-                        views[t] = row["target_return"]
-                        confidences[t] = row["confidence"]
+            raise ValueError(
+                "rebalance_policy must be one of: weekly, full-universe-only, buy-and-hold"
+            )
 
-            lookback_start = date - pd.Timedelta(weeks=LOOKBACK_WEEKS)
-            history = daily_prices.loc[lookback_start:date, :]
+        if should_rebalance:
+            views = {}
+            confidences = {}
 
-            weights = compute_bl_weights(active_set, history, views, confidences)
+            if strategy.startswith("Endowus-60/40"):
+                # Static target weights, normalized for assets currently tradable.
+                target_weights_dict = {
+                    t: ENDOWUS_WEIGHTS.get(t, 0.0) for t in active_set
+                }
+                total_w = sum(target_weights_dict.values())
+                weights = (
+                    {t: target_weights_dict[t] / total_w for t in active_set}
+                    if total_w > 0
+                    else {}
+                )
+                weights = enforce_class_allocation_targets(weights, active_set)
+            else:
+                # LLM strategies: fetch from signals and run Black-Litterman.
+                if not signals_df.empty:
+                    day_signals = signals_df[signals_df["Date"] == date]
+                    for _, row in day_signals.iterrows():
+                        t = row["Ticker"]
+                        if t in active_set:
+                            views[t] = row["target_return"]
+                            confidences[t] = row["confidence"]
 
-        te = port.total_equity(val_prices)
-        port.buy_target_weights(weights, exec_prices, te)
+                lookback_start = date - pd.Timedelta(weeks=LOOKBACK_WEEKS)
+                history = daily_prices.loc[lookback_start:date, :]
+
+                weights = compute_bl_weights(active_set, history, views, confidences)
+
+            te = port.total_equity(val_prices)
+            port.buy_target_weights(weights, exec_prices, te)
+            last_target_weights = weights.copy()
+            if rebalance_policy == "buy-and-hold":
+                has_rebalanced_once = True
+
         equity_curve[date] = port.total_equity(val_prices)
-        weights_log[date] = weights
+
+        if log_realized_weights:
+            weights_log[date] = port.current_weights(val_prices)
+        elif should_rebalance:
+            weights_log[date] = last_target_weights
+        elif last_target_weights:
+            weights_log[date] = last_target_weights
+        else:
+            weights_log[date] = port.current_weights(val_prices)
 
     weights_df = pd.DataFrame(weights_log).T.sort_index().fillna(0.0)
     weights_df.index.name = "Date"
@@ -508,9 +633,11 @@ def load_endowus_historical(curves: dict, metrics_list: list):
 
         for portfolio in data:
             name = f"Endowus_Actual_{portfolio['shortName'].replace(' | ', '/')}"
+            normalized_curve = None
 
             # Extract and align NAV curve
             navs = portfolio.get("monthlyNavs", [])
+
             if navs:
                 # Convert list of [date, nav] into a Series
                 dates = [pd.to_datetime(row[0]) for row in navs]
@@ -527,24 +654,56 @@ def load_endowus_historical(curves: dict, metrics_list: list):
                     # Normalize to starting equity
                     s = (s / s.iloc[0]) * INITIAL_EQUITY
                     s.name = name
+                    normalized_curve = s
                     curves[name] = s
 
             # Extract official metrics
             perf = portfolio.get("performanceMetrics", {})
-            if perf:
-                ann_return = perf.get("annualisedReturn", 0.0)
-                max_dd = perf.get("maxDrawDown", {}).get("drawDown", 0.0)
-                sharpe = (
-                    0.0  # They didn't provide Sharpe, we can leave 0 or calculate it
-                )
+            if perf or normalized_curve is not None:
+                ann_return = perf.get("annualisedReturn") if perf else None
+                max_dd = perf.get("maxDrawDown", {}).get("drawDown") if perf else None
+
+                sharpe_str = "N/A"
+                if normalized_curve is not None and len(normalized_curve) > 1:
+                    monthly_returns = normalized_curve.pct_change().dropna()
+                    if not monthly_returns.empty:
+                        monthly_rf = (1 + RISK_FREE_RATE) ** (1 / 12) - 1
+                        monthly_excess = monthly_returns - monthly_rf
+                        vol = monthly_excess.std()
+                        if vol > 0:
+                            monthly_sharpe = (monthly_excess.mean() / vol) * np.sqrt(12)
+                            sharpe_str = f"{monthly_sharpe:.3f}"
+                        else:
+                            sharpe_str = "0.000"
+
+                        # Fallbacks if official metrics are absent.
+                        if ann_return is None:
+                            total_return = (
+                                normalized_curve.iloc[-1] / normalized_curve.iloc[0]
+                            ) - 1
+                            n_years = len(normalized_curve) / 12
+                            ann_return = (
+                                (1 + total_return) ** (1 / n_years) - 1
+                                if n_years > 0
+                                else 0.0
+                            )
+
+                        if max_dd is None:
+                            rolling_max = normalized_curve.cummax()
+                            drawdowns = (normalized_curve - rolling_max) / rolling_max
+                            max_dd = drawdowns.min()
+
+                ann_return = 0.0 if ann_return is None else ann_return
+                max_dd = 0.0 if max_dd is None else max_dd
+                calmar = ann_return / abs(max_dd) if max_dd != 0 else np.nan
 
                 metrics_list.append(
                     {
                         "Strategy": name,
                         "Ann. Return": f"{ann_return:.2%}",
-                        "Sharpe Ratio": f"N/A",  # Provided dump doesn't have it
+                        "Sharpe Ratio": sharpe_str,
                         "Max Drawdown": f"{max_dd:.2%}",
-                        "Calmar Ratio": f"{ann_return / abs(max_dd) if max_dd else 0:.3f}",
+                        "Calmar Ratio": f"{calmar:.3f}" if pd.notna(calmar) else "N/A",
                     }
                 )
     except Exception as e:
@@ -663,7 +822,9 @@ def main():
 
     # Inject actual historical Endowus numbers
     load_endowus_historical(curves, metrics_list)
-
+    print("\n[Equity Curves]")
+    for name, curve in curves.items():
+        print(f"{name}: Final equity ${curve.iloc[-1]:,.2f}")
     print("\n[Metrics Summary]")
     print("=" * 70)
     summary = pd.DataFrame([m for m in metrics_list if m])  # Filter out any empties
