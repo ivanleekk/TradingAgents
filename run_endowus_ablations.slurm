@@ -31,7 +31,7 @@ uv sync || echo "uv sync skipped or failed, continuing..."
 
 # Run the ablations script
 echo "Starting Endowus ablation variation $VAR..."
-uv run python run_endowus_ablations.py "$VAR" || python run_endowus_ablations.py "$VAR"
+uv run run_endowus_ablations.py "$VAR" || python run_endowus_ablations.py "$VAR"
 
 # Check exit status
 EXIT_CODE=$?

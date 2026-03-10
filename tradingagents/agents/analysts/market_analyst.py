@@ -13,12 +13,12 @@ def create_market_analyst(llm, toolkit):
         if toolkit.config["online_tools"]:
             tools = [
                 toolkit.get_YFin_data_online,
-                toolkit.get_stockstats_indicators_report_online,
+                # toolkit.get_stockstats_indicators_report_online,
             ]
         else:
             tools = [
-                toolkit.get_YFin_data,
-                toolkit.get_stockstats_indicators_report,
+                # toolkit.get_YFin_data,
+                # toolkit.get_stockstats_indicators_report,
             ]
 
         system_message = (
@@ -80,7 +80,7 @@ Volume-Based Indicators:
 
         if len(result.tool_calls) == 0:
             report = result.content
-       
+
         return {
             "messages": [result],
             "market_report": report,

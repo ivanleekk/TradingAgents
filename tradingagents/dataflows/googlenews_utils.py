@@ -31,78 +31,143 @@ def make_request(url, headers):
     return response
 
 
+# def getNewsData(query, start_date, end_date):
+#     """
+#     Scrape Google News search results for a given query and date range.
+#     query: str - search query
+#     start_date: str - start date in the format yyyy-mm-dd or mm/dd/yyyy
+#     end_date: str - end date in the format yyyy-mm-dd or mm/dd/yyyy
+#     """
+#     if "-" in start_date:
+#         start_date = datetime.strptime(start_date, "%Y-%m-%d")
+#         start_date = start_date.strftime("%m/%d/%Y")
+#     if "-" in end_date:
+#         end_date = datetime.strptime(end_date, "%Y-%m-%d")
+#         end_date = end_date.strftime("%m/%d/%Y")
+
+#     headers = {
+#         "User-Agent": (
+#             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+#             "AppleWebKit/537.36 (KHTML, like Gecko) "
+#             "Chrome/101.0.4951.54 Safari/537.36"
+#         )
+#     }
+
+#     news_results = []
+#     page = 0
+#     while True:
+#         offset = page * 10
+#         url = (
+#             f"https://www.google.com/search?q={query}"
+#             f"&tbs=cdr:1,cd_min:{start_date},cd_max:{end_date}"
+#             f"&tbm=nws&start={offset}"
+#         )
+
+#         try:
+#             response = make_request(url, headers)
+#             soup = BeautifulSoup(response.content, "html.parser")
+#             results_on_page = soup.select("div.SoaBEf")
+
+#             if not results_on_page:
+#                 break  # No more results found
+
+#             for el in results_on_page:
+#                 try:
+#                     link = el.find("a")["href"]
+#                     title = el.select_one("div.MBeuO").get_text()
+#                     snippet = el.select_one(".GI74Re").get_text()
+#                     date = el.select_one(".LfVVr").get_text()
+#                     source = el.select_one(".NUnG9d span").get_text()
+#                     news_results.append(
+#                         {
+#                             "link": link,
+#                             "title": title,
+#                             "snippet": snippet,
+#                             "date": date,
+#                             "source": source,
+#                         }
+#                     )
+#                 except Exception as e:
+#                     print(f"Error processing result: {e}")
+#                     # If one of the fields is not found, skip this result
+#                     continue
+
+#             # Update the progress bar with the current count of results scraped
+
+#             # Check for the "Next" link (pagination)
+#             next_link = soup.find("a", id="pnnext")
+#             if not next_link:
+#                 break
+
+#             page += 1
+
+#         except Exception as e:
+#             print(f"Failed after multiple retries: {e}")
+#             break
+
+#     return news_results
+
+# RSS
+import feedparser
+import urllib.parse
+from datetime import datetime
+
+
 def getNewsData(query, start_date, end_date):
     """
-    Scrape Google News search results for a given query and date range.
+    Fetch Google News RSS results for a given query and date range.
     query: str - search query
-    start_date: str - start date in the format yyyy-mm-dd or mm/dd/yyyy
-    end_date: str - end date in the format yyyy-mm-dd or mm/dd/yyyy
+    start_date: str - format yyyy-mm-dd
+    end_date: str - format yyyy-mm-dd
     """
-    if "-" in start_date:
-        start_date = datetime.strptime(start_date, "%Y-%m-%d")
-        start_date = start_date.strftime("%m/%d/%Y")
-    if "-" in end_date:
-        end_date = datetime.strptime(end_date, "%Y-%m-%d")
-        end_date = end_date.strftime("%m/%d/%Y")
+    # Ensure dates are in YYYY-MM-DD for the RSS search operators
+    try:
+        if "/" in start_date:
+            start_date = datetime.strptime(start_date, "%m/%d/%Y").strftime("%Y-%m-%d")
+        if "/" in end_date:
+            end_date = datetime.strptime(end_date, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except Exception as e:
+        print(f"Date formatting error: {e}")
+        return []
 
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/101.0.4951.54 Safari/537.36"
-        )
-    }
+    # Construct the query with date operators
+    # Example: "AAPL after:2023-01-01 before:2023-01-31"
+    rss_query = f"{query} after:{start_date} before:{end_date}"
+    encoded_query = urllib.parse.quote(rss_query)
+
+    # RSS URL (hl=en-SG and gl=SG for Singapore context, adjust as needed)
+    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-SG&gl=SG&ceid=SG:en"
 
     news_results = []
-    page = 0
-    while True:
-        offset = page * 10
-        url = (
-            f"https://www.google.com/search?q={query}"
-            f"&tbs=cdr:1,cd_min:{start_date},cd_max:{end_date}"
-            f"&tbm=nws&start={offset}"
-        )
 
-        try:
-            response = make_request(url, headers)
-            soup = BeautifulSoup(response.content, "html.parser")
-            results_on_page = soup.select("div.SoaBEf")
+    try:
+        # Use requests to get the content, which handles SSL more reliably
+        response = requests.get(url, timeout=10)
 
-            if not results_on_page:
-                break  # No more results found
+        # Parse the string content instead of the URL
+        feed = feedparser.parse(response.content)
 
-            for el in results_on_page:
-                try:
-                    link = el.find("a")["href"]
-                    title = el.select_one("div.MBeuO").get_text()
-                    snippet = el.select_one(".GI74Re").get_text()
-                    date = el.select_one(".LfVVr").get_text()
-                    source = el.select_one(".NUnG9d span").get_text()
-                    news_results.append(
-                        {
-                            "link": link,
-                            "title": title,
-                            "snippet": snippet,
-                            "date": date,
-                            "source": source,
-                        }
-                    )
-                except Exception as e:
-                    print(f"Error processing result: {e}")
-                    # If one of the fields is not found, skip this result
-                    continue
+        for entry in feed.entries:
+            raw_title = entry.title
+            source = "Unknown"
+            title = raw_title
 
-            # Update the progress bar with the current count of results scraped
+            if " - " in raw_title:
+                parts = raw_title.rsplit(" - ", 1)
+                title = parts[0]
+                source = parts[1]
 
-            # Check for the "Next" link (pagination)
-            next_link = soup.find("a", id="pnnext")
-            if not next_link:
-                break
+            news_results.append(
+                {
+                    "link": entry.link,
+                    "title": title,
+                    "snippet": entry.summary if "summary" in entry else "",
+                    "date": entry.published,
+                    "source": source,
+                }
+            )
 
-            page += 1
-
-        except Exception as e:
-            print(f"Failed after multiple retries: {e}")
-            break
+    except Exception as e:
+        print(f"Error: {e}")
 
     return news_results
