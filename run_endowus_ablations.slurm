@@ -5,7 +5,7 @@
 #SBATCH --time=72:00:00
 #SBATCH --partition=long
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --array=0-3
 #SBATCH --mail-type=ALL

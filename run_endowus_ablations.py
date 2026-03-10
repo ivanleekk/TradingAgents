@@ -174,7 +174,7 @@ def run_variation(
                 writer.writerow(["test_date", "decision"])
 
     # 3. Multithreaded execution
-    max_workers = 10
+    max_workers = 16
     print(
         f"[{variation_id}] Starting thread pool with {max_workers} workers...",
         flush=True,
