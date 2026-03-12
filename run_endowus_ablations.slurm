@@ -5,11 +5,11 @@
 #SBATCH --time=72:00:00
 #SBATCH --partition=long
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --array=0-3
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=ivanlee
+#SBATCH --mail-user=ivan.lee@u.nus.edu
 
 # Map array ID to Variation letter (0->A, 1->B, 2->C, 3->D)
 VARS=("A" "B" "C" "D")
@@ -31,7 +31,7 @@ uv sync || echo "uv sync skipped or failed, continuing..."
 
 # Run the ablations script
 echo "Starting Endowus ablation variation $VAR..."
-uv run python run_endowus_ablations.py "$VAR" || python run_endowus_ablations.py "$VAR"
+uv run run_endowus_ablations.py "$VAR" || python run_endowus_ablations.py "$VAR"
 
 # Check exit status
 EXIT_CODE=$?

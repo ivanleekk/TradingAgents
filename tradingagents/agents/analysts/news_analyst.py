@@ -3,10 +3,29 @@ import time
 import json
 
 
+ETF_INDUSTRY_MAP = {
+    "0P0001AF7U.SI": "Global Equity",
+    "0P0000KYEE.SI": "Global Bonds (SGD-Hedged)",
+    "SPY": "US Large-Cap Equity (S&P 500)",
+    "^990100-USD-STRD": "Developed Markets Equity",
+    "DE000SLA4YD9.SG": "US Equity",
+    "AGGG.L": "Global Aggregate Bonds (SGD-Hedged)",
+    "IE0002461055.IR": "Global Income Bonds (SGD-Hedged)",
+    "0P0001AF7Z.SI": "Emerging Markets Large-Cap Equity",
+    "0P0001EQUE.SI": "Global Core Fixed Income (SGD-Hedged)",
+    "0P0001EF2T.SI": "Pacific Basin Small-Cap Equity",
+    "0P0001CC3M": "Global Short-Duration Aggregate Bonds (1-5Y, SGD-Hedged)",
+    "PEBIX": "Emerging Markets Government Bonds",
+    "EIMI.L": "Emerging Markets Equity",
+    "0P0001DWI0.SI": "Emerging Markets Bonds (SGD-Hedged)",
+}
+
+
 def create_news_analyst(llm, toolkit):
     def news_analyst_node(state):
         current_date = state["trade_date"]
         ticker = state["company_of_interest"]
+        fund_industry = ETF_INDUSTRY_MAP.get(ticker, "Unknown / Diversified Fund")
 
         if toolkit.config["online_tools"]:
             tools = [
@@ -15,9 +34,9 @@ def create_news_analyst(llm, toolkit):
             ]
         else:
             tools = [
-                toolkit.get_finnhub_news,
-                toolkit.get_reddit_news,
-                toolkit.get_google_news,
+                # toolkit.get_finnhub_news,
+                # toolkit.get_reddit_news,
+                # toolkit.get_google_news,
             ]
 
         system_message = (
@@ -36,7 +55,9 @@ def create_news_analyst(llm, toolkit):
                     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
                     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
                     " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. We are looking at the company {ticker}",
+                    "For your reference, the current date is {current_date}. "
+                    "We are looking at the fund {ticker}. "
+                    "This fund's primary industry/exposure is: {fund_industry}.",
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
@@ -46,6 +67,7 @@ def create_news_analyst(llm, toolkit):
         prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
         prompt = prompt.partial(current_date=current_date)
         prompt = prompt.partial(ticker=ticker)
+        prompt = prompt.partial(fund_industry=fund_industry)
 
         chain = prompt | llm.bind_tools(tools)
         result = chain.invoke(state["messages"])

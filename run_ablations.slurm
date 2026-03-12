@@ -9,7 +9,7 @@
 #SBATCH --mem=64G
 #SBATCH --array=0-3
 #SBATCH --mail-type=ALL
-#SBATCH --mail-user=ivanlee
+#SBATCH --mail-user=ivan.lee@u.nus.edu
 
 # Map array ID to Variation letter (0->A, 1->B, 2->C, 3->D)
 VARS=("A" "B" "C" "D")
