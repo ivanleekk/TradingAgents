@@ -47,18 +47,38 @@ WEEKS_PER_YEAR = 52
 
 # Fallback proxy weights if raw Endowus composition cannot be loaded.
 DEFAULT_ENDOWUS_WEIGHTS = {
-    "URTH": 0.285,  # Global Developed Equity
-    "SPY": 0.174,  # US S&P 500
-    "EEM": 0.093,  # Emerging Markets Equity
-    "VPL": 0.048,  # Pacific Basin Small/Mid Cap
-    "BNDW": 0.230,  # Global Aggregate Bond
-    "AGG": 0.070,  # US Aggregate Bond
-    "EMB": 0.060,  # Emerging Markets Government Bond
-    "BSV": 0.040,  # Short-Term Global Bond
+    "0P0001AF7U.SI": 0.195,  # Dimensional Global Core Equity Fund
+    "0P0000KYEE.SI": 0.1,  # PIMCO GIS Global Bond Fund SGD-Hedged
+    "SPY": 0.09,  # iShares US Index Fund (IE) S&P 500
+    "^990100-USD-STRD": 0.09,  # iShares Developed World Index Fund (IE)
+    "DE000SLA4YD9.SG": 0.084,  # Amundi Prime USA Fund
+    "AGGG.L": 0.08,  # Amundi Core Global Aggregate Bond SGD-Hedged
+    "IE0002461055.IR": 0.07,  # PIMCO GIS Income Fund SGD-Hedged
+    "0P0001AF7Z.SI": 0.06,  # Dimensional Emerging Markets Large Cap Core Equity Fund
+    "0P0001EQUE.SI": 0.05,  # Dimensional Global Core Fixed Income Fund SGD-Hedged
+    "0P0001EF2T.SI": 0.048,  # Dimensional Pacific Basin Small Companies Fund
+    "0P0001CC3M": 0.04,  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    "PEBIX": 0.04,  # iShares Emerging Markets Government Bond Index Fund (IE)
+    "EIMI.L": 0.033,  # Amundi Core MSCI Emerging Markets Fund
+    "0P0001DWI0.SI": 0.02,  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
 }
 
-# Runtime universe; overwritten from Endowus 60|40 raw composition in main().
-ENDOWUS_WEIGHTS = DEFAULT_ENDOWUS_WEIGHTS.copy()
+ENDOWUS_WEIGHTS = {
+    "0P0001AF7U.SI": 0.195,  # Dimensional Global Core Equity Fund
+    "0P0000KYEE.SI": 0.1,  # PIMCO GIS Global Bond Fund SGD-Hedged
+    "SPY": 0.09,  # iShares US Index Fund (IE) S&P 500
+    "^990100-USD-STRD": 0.09,  # iShares Developed World Index Fund (IE)
+    "DE000SLA4YD9.SG": 0.084,  # Amundi Prime USA Fund
+    "AGGG.L": 0.08,  # Amundi Core Global Aggregate Bond SGD-Hedged
+    "IE0002461055.IR": 0.07,  # PIMCO GIS Income Fund SGD-Hedged
+    "0P0001AF7Z.SI": 0.06,  # Dimensional Emerging Markets Large Cap Core Equity Fund
+    "0P0001EQUE.SI": 0.05,  # Dimensional Global Core Fixed Income Fund SGD-Hedged
+    "0P0001EF2T.SI": 0.048,  # Dimensional Pacific Basin Small Companies Fund
+    "0P0001CC3M": 0.04,  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    "PEBIX": 0.04,  # iShares Emerging Markets Government Bond Index Fund (IE)
+    "EIMI.L": 0.033,  # Amundi Core MSCI Emerging Markets Fund
+    "0P0001DWI0.SI": 0.02,  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
+}
 
 # Adjustable class-level allocation target used by optimization outputs.
 TARGET_EQUITY_ALLOCATION = 0.80
@@ -66,6 +86,54 @@ TARGET_EQUITY_ALLOCATION = 0.80
 # Default class map for the fallback ETF universe.
 EQUITY_ASSETS = ["URTH", "SPY", "EEM", "VPL"]
 FIXED_INCOME_ASSETS = ["BNDW", "AGG", "EMB", "BSV"]
+
+
+def infer_periods_per_year(index: pd.Index) -> int:
+    """Infer sampling frequency from the time index for annualization."""
+    if len(index) < 3:
+        return WEEKS_PER_YEAR
+
+    diffs = index.to_series().diff().dropna().dt.days
+    if diffs.empty:
+        return WEEKS_PER_YEAR
+
+    median_days = float(diffs.median())
+    if median_days <= 10:
+        return 52
+    if median_days <= 40:
+        return 12
+    if median_days <= 120:
+        return 4
+    return 1
+
+
+def align_and_rebase_curves(
+    curves: dict[str, pd.Series], base_value: float = INITIAL_EQUITY
+) -> tuple[dict[str, pd.Series], pd.Timestamp | None]:
+    """Trim all curves to a common start date and rebase to the same base value."""
+    valid_curves = {
+        name: s.sort_index().dropna()
+        for name, s in curves.items()
+        if isinstance(s, pd.Series) and not s.dropna().empty
+    }
+    if not valid_curves:
+        return {}, None
+
+    common_start = max(s.index.min() for s in valid_curves.values())
+
+    aligned: dict[str, pd.Series] = {}
+    for name, s in valid_curves.items():
+        trimmed = s[s.index >= common_start].dropna()
+        if trimmed.empty:
+            continue
+
+        first_val = float(trimmed.iloc[0])
+        if first_val > 0:
+            trimmed = (trimmed / first_val) * base_value
+        trimmed.name = name
+        aligned[name] = trimmed
+
+    return aligned, common_start
 
 
 def enforce_class_allocation_targets(
@@ -408,9 +476,12 @@ def compute_bl_weights(
 
 
 class Portfolio:
-    def __init__(self, initial_equity: float):
+    def __init__(
+        self, initial_equity: float, transaction_cost: float = TRANSACTION_COST
+    ):
         self.cash = initial_equity
         self.shares: dict[str, float] = {}
+        self.transaction_cost = float(transaction_cost)
 
     def total_equity(self, prices: dict[str, float]) -> float:
         mv = sum(self.shares.get(t, 0.0) * prices.get(t, 0.0) for t in self.shares)
@@ -437,7 +508,7 @@ class Portfolio:
             qty = self.shares.pop(t, 0.0)
             if qty > 0:
                 gross = qty * prices[t]
-                fee = gross * TRANSACTION_COST
+                fee = gross * self.transaction_cost
                 net = gross - fee
                 self.cash += net
                 proceeds += gross
@@ -460,7 +531,7 @@ class Portfolio:
             if current_val > desired_val + 1e-6:
                 excess_shares = (current_val - desired_val) / prices[t]
                 gross = excess_shares * prices[t]
-                fee = gross * TRANSACTION_COST
+                fee = gross * self.transaction_cost
                 self.shares[t] = self.shares.get(t, 0.0) - excess_shares
                 self.cash += gross - fee
 
@@ -474,10 +545,10 @@ class Portfolio:
                 if spend <= 0:
                     continue
                 gross = spend
-                fee = gross * TRANSACTION_COST
+                fee = gross * self.transaction_cost
                 net_spend = gross + fee
                 net_spend = min(net_spend, self.cash)
-                actual_gross = net_spend / (1 + TRANSACTION_COST)
+                actual_gross = net_spend / (1 + self.transaction_cost)
                 self.shares[t] = self.shares.get(t, 0.0) + actual_gross / prices[t]
                 self.cash -= net_spend
 
@@ -490,9 +561,10 @@ def run_endowus_backtest(
     daily_prices: pd.DataFrame,
     rebalance_policy: str = "weekly",
     log_realized_weights: bool = False,
+    transaction_cost: float = TRANSACTION_COST,
 ) -> tuple[pd.Series, pd.DataFrame]:
 
-    port = Portfolio(INITIAL_EQUITY)
+    port = Portfolio(INITIAL_EQUITY, transaction_cost)
     equity_curve = {}
     weights_log = {}
     last_target_weights: dict[str, float] = {}
@@ -593,14 +665,22 @@ def compute_metrics(equity: pd.Series, name: str = "") -> dict:
     if len(eq) < 2:
         return {}
 
-    weekly_returns = eq.pct_change().dropna()
-    total_return = (eq.iloc[-1] / eq.iloc[0]) - 1
-    n_years = len(eq) / WEEKS_PER_YEAR
-    ann_return = (1 + total_return) ** (1 / n_years) - 1
+    periodic_returns = eq.pct_change().dropna()
+    periods_per_year = infer_periods_per_year(eq.index)
 
-    excess = weekly_returns - RISK_FREE_RATE / WEEKS_PER_YEAR
+    total_return = (eq.iloc[-1] / eq.iloc[0]) - 1
+    elapsed_days = (eq.index[-1] - eq.index[0]).days
+    if elapsed_days > 0:
+        n_years = elapsed_days / 365.25
+    else:
+        n_years = len(eq) / periods_per_year
+
+    ann_return = (1 + total_return) ** (1 / n_years) - 1 if n_years > 0 else 0.0
+
+    period_rf = (1 + RISK_FREE_RATE) ** (1 / periods_per_year) - 1
+    excess = periodic_returns - period_rf
     sharpe = (
-        (excess.mean() / excess.std()) * np.sqrt(WEEKS_PER_YEAR)
+        (excess.mean() / excess.std()) * np.sqrt(periods_per_year)
         if excess.std() > 0
         else 0.0
     )
@@ -812,16 +892,33 @@ def main():
             continue
 
         curve, wlog = run_endowus_backtest(
-            name, sigs, weekly_prices, weekly_exec_prices, daily_prices
+            name,
+            sigs,
+            weekly_prices,
+            weekly_exec_prices,
+            daily_prices,
+            transaction_cost=TRANSACTION_COST,
         )
         curves[name] = curve
         weights_logs[name] = wlog
         print(f"  Final equity: ${curve.iloc[-1]:,.2f}")
 
-    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
+    # Inject actual historical Endowus curves.
+    # Metrics are recomputed after alignment/rebasing for apples-to-apples comparison.
+    load_endowus_historical(curves, [])
 
-    # Inject actual historical Endowus numbers
-    load_endowus_historical(curves, metrics_list)
+    aligned_curves, common_start = align_and_rebase_curves(curves)
+    if not aligned_curves:
+        print("No valid curves available after alignment.")
+        return
+
+    curves = aligned_curves
+    if common_start is not None:
+        print(
+            f"Aligned and rebased all curves from common start: {common_start.date()}"
+        )
+
+    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
     print("\n[Equity Curves]")
     for name, curve in curves.items():
         print(f"{name}: Final equity ${curve.iloc[-1]:,.2f}")

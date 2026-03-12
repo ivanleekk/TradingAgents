@@ -18,6 +18,7 @@ from endowus_portfolio_engine import (
     compute_metrics,
     run_endowus_backtest,
     load_endowus_historical,
+    align_and_rebase_curves,
 )
 
 warnings.filterwarnings("ignore")
@@ -42,7 +43,7 @@ ENDOWUS_WEIGHTS = {
     "0P0001AF7Z.SI": 0.06,  # Dimensional Emerging Markets Large Cap Core Equity Fund
     "0P0001EQUE.SI": 0.05,  # Dimensional Global Core Fixed Income Fund SGD-Hedged
     "0P0001EF2T.SI": 0.048,  # Dimensional Pacific Basin Small Companies Fund
-    "0P0001CC3M": 0.04,  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    "0P0001CC3M": 0.04,  # iShares G lobal Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
     "PEBIX": 0.04,  # iShares Emerging Markets Government Bond Index Fund (IE)
     "EIMI.L": 0.033,  # Amundi Core MSCI Emerging Markets Fund
     "0P0001DWI0.SI": 0.02,  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
@@ -495,10 +496,56 @@ def compute_systematic_bl_weights(
         return fallback_weights
 
 
+def compute_markowitz_weights(
+    active_set: list[str],
+    price_history: pd.DataFrame,
+    target_equity_allocation: float = TARGET_EQUITY_ALLOCATION,
+) -> dict[str, float]:
+    """Compute Markowitz (mean-variance) optimized long-only weights for the active set.
+
+    Uses historical daily returns from `price_history` (expects columns for tickers).
+    Falls back to equal-weights when there isn't enough data or optimization fails.
+    """
+    if not active_set:
+        return {}
+
+    sub = price_history[active_set].ffill().bfill().dropna(axis=0, how="all")
+    if sub.shape[0] < 10 or len(active_set) < 2:
+        return {t: 1.0 / len(active_set) for t in active_set}
+
+    try:
+        returns = sub.pct_change().dropna()
+        mu = returns.mean() * 252
+        cov = returns.cov() * 252
+
+        ef = EfficientFrontier(mu, cov)
+        try:
+            ef.max_sharpe(risk_free_rate=RISK_FREE_RATE)
+        except Exception:
+            ef = EfficientFrontier(mu, cov)
+            ef.min_volatility()
+
+        cleaned = ef.clean_weights()
+        weights = {str(t): float(cleaned.get(t, 0.0)) for t in active_set}
+        if not weights:
+            return {t: 1.0 / len(active_set) for t in active_set}
+
+        return enforce_class_allocation_targets(
+            weights, active_set, target_equity_allocation
+        )
+
+    except Exception as e:
+        print(f"[DEBUG] Markowitz optimization failed for {active_set}: {e}")
+        return {t: 1.0 / len(active_set) for t in active_set}
+
+
 class Portfolio:
-    def __init__(self, initial_equity: float):
+    def __init__(
+        self, initial_equity: float, transaction_cost: float = TRANSACTION_COST
+    ):
         self.cash = initial_equity
         self.shares: dict[str, float] = {}
+        self.transaction_cost = float(transaction_cost)
 
     def total_equity(self, prices: dict[str, float]) -> float:
         mv = sum(self.shares.get(t, 0.0) * prices.get(t, 0.0) for t in self.shares)
@@ -518,7 +565,7 @@ class Portfolio:
                 continue
 
             gross = qty * px
-            fee = gross * TRANSACTION_COST
+            fee = gross * self.transaction_cost
             net = gross - fee
             self.cash += net
             proceeds += gross
@@ -546,7 +593,7 @@ class Portfolio:
             if current_val > desired_val + 1e-6:
                 excess_shares = (current_val - desired_val) / px
                 gross = excess_shares * px
-                fee = gross * TRANSACTION_COST
+                fee = gross * self.transaction_cost
                 self.shares[t] = self.shares.get(t, 0.0) - excess_shares
                 self.cash += gross - fee
 
@@ -561,10 +608,10 @@ class Portfolio:
                 if spend <= 0:
                     continue
                 gross = spend
-                fee = gross * TRANSACTION_COST
+                fee = gross * self.transaction_cost
                 net_spend = gross + fee
                 net_spend = min(net_spend, self.cash)
-                actual_gross = net_spend / (1 + TRANSACTION_COST)
+                actual_gross = net_spend / (1 + self.transaction_cost)
                 self.shares[t] = self.shares.get(t, 0.0) + actual_gross / px
                 self.cash -= net_spend
 
@@ -576,7 +623,7 @@ def run_systematic_backtest(
     fred_data: dict,
 ) -> tuple[pd.Series, pd.DataFrame]:
 
-    port = Portfolio(INITIAL_EQUITY)
+    port = Portfolio(INITIAL_EQUITY, TRANSACTION_COST)
     equity_curve = {}
     weights_log = {}
 
@@ -626,6 +673,62 @@ def run_systematic_backtest(
     return pd.Series(equity_curve, name="Systematic-BL").sort_index(), weights_df
 
 
+def run_markowitz_backtest(
+    weekly_prices: pd.DataFrame,
+    weekly_exec_prices: pd.DataFrame,
+    daily_prices: pd.DataFrame,
+) -> tuple[pd.Series, pd.DataFrame]:
+    """Run a weekly rebalanced Markowitz mean-variance backtest over the Endowus universe.
+
+    This uses `compute_markowitz_weights` at each rebalancing date using the
+    last 52 weeks of daily history (or available history).
+    """
+    port = Portfolio(INITIAL_EQUITY, TRANSACTION_COST)
+    equity_curve = {}
+    weights_log = {}
+
+    tickers = list(ENDOWUS_WEIGHTS.keys())
+    dates = weekly_prices.index.intersection(weekly_exec_prices.index)
+    dates = dates[
+        (dates >= pd.to_datetime(START_DATE)) & (dates <= pd.to_datetime(END_DATE))
+    ]
+
+    for date in dates:
+        price_row = weekly_prices.loc[date]
+        exec_row = weekly_exec_prices.loc[date]
+
+        val_prices = {
+            t: float(price_row[t])
+            for t in tickers
+            if pd.notna(price_row.get(t)) and float(price_row.get(t, 0)) > 0
+        }
+        exec_prices = {
+            t: float(exec_row[t])
+            for t in tickers
+            if pd.notna(exec_row.get(t)) and float(exec_row.get(t, 0)) > 0
+        }
+
+        for t in tickers:
+            if t not in exec_prices and t in val_prices:
+                exec_prices[t] = val_prices[t]
+
+        active_set = list(exec_prices.keys())
+
+        lookback_start = date - pd.Timedelta(weeks=52)
+        history = daily_prices.loc[lookback_start:date, :]
+
+        weights = compute_markowitz_weights(active_set, history)
+
+        te = port.total_equity(val_prices)
+        port.buy_target_weights(weights, exec_prices, te)
+        equity_curve[date] = port.total_equity(val_prices)
+        weights_log[date] = weights
+
+    weights_df = pd.DataFrame(weights_log).T.sort_index().fillna(0.0)
+    weights_df.index.name = "Date"
+    return pd.Series(equity_curve, name="Markowitz").sort_index(), weights_df
+
+
 def plot_combined_curves(
     curves_df: pd.DataFrame,
     output_path: str = "results/endowus_systematic_comparison_plot.png",
@@ -664,6 +767,8 @@ def plot_combined_curves(
             )
         elif "LLM-BL" in column:
             ax.plot(curves_df.index, curves_df[column], label=column, lw=2.0, ls="-")
+        else:
+            ax.plot(curves_df.index, curves_df[column], label=column, lw=1.5, ls="-")
 
     ax.set_title(
         "Systematic Baseline & AI BL Portfolios vs Actual Endowus Flagship Funds (2020-2024)",
@@ -771,6 +876,76 @@ def plot_composition_comparison(
     print(f"Composition comparison plot saved to {output_path}")
 
 
+def plot_individual_ticker_growth(
+    daily_close: pd.DataFrame,
+    tickers: list[str],
+    start: pd.Timestamp | str,
+    end: pd.Timestamp | str = END_DATE,
+    output_path: str = "results/endowus_individual_tickers.png",
+):
+    """Plot individual ticker growth rebased to `INITIAL_EQUITY` over the given window.
+
+    Only tickers present in `daily_close` are plotted.
+    """
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    available = [t for t in tickers if t in daily_close.columns]
+    if not available:
+        print("No requested tickers found in price data for individual plot.")
+        return
+
+    df = daily_close.reindex(columns=available).loc[
+        pd.to_datetime(start) : pd.to_datetime(end)
+    ]
+
+    df = df.ffill().dropna(how="all")
+
+    if df.empty:
+        print(
+            "No price data available for the chosen time window for individual tickers."
+        )
+        return
+
+    # Allocate initial equity equally across tickers so each starts at the same value.
+    # Use each ticker's first non-NA price within the window to avoid NaNs when
+    # some tickers lack a price on the first date.
+    df = df.sort_index()
+    first_vals = df.apply(
+        lambda s: s.dropna().iloc[0] if s.dropna().shape[0] > 0 else np.nan
+    )
+    valid_cols = first_vals[first_vals.notna()].index.tolist()
+    if not valid_cols:
+        print("No tickers with valid prices in the chosen window.")
+        return
+
+    alloc = INITIAL_EQUITY / float(len(valid_cols))
+    rebased = df[valid_cols].div(first_vals[valid_cols], axis=1).multiply(alloc)
+    print(rebased)
+    fig, ax = plt.subplots(figsize=(14, 8))
+    for col in rebased.columns:
+        ax.plot(rebased.index, rebased[col], label=col, lw=1.6)
+
+    ax.set_title(
+        f"Individual Endowus Tickers Growth (Equal-weight start, total ${INITIAL_EQUITY:,.0f})",
+        fontsize=14,
+        fontweight="bold",
+    )
+    ax.set_ylabel(f"Value (per-ticker start = ${alloc:,.2f})")
+    ax.set_xlabel("Date")
+
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
+    ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
+    plt.xticks(rotation=45)
+
+    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", framealpha=0.9)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    plt.savefig(output_path, dpi=150)
+    plt.close()
+    print(f"Individual tickers plot saved to {output_path}")
+
+
 def main():
     print("=" * 60)
     print("  Systematic Black-Litterman Portfolio Engine")
@@ -817,6 +992,7 @@ def main():
         ),
         ("Endowus-60/40-BuyHold", pd.DataFrame(), "buy-and-hold"),
         ("Systematic-BL", None, "weekly"),  # None means use the systematic generation
+        ("Markowitz", None, "weekly"),
         ("LLM-BL-A", signals_A, "weekly"),
         ("LLM-BL-B", signals_B, "weekly"),
         ("LLM-BL-C", signals_C, "weekly"),
@@ -832,6 +1008,10 @@ def main():
         if name == "Systematic-BL":
             curve, wlog = run_systematic_backtest(
                 weekly_prices, weekly_exec_prices, daily_close, fred_data
+            )
+        elif name == "Markowitz":
+            curve, wlog = run_markowitz_backtest(
+                weekly_prices, weekly_exec_prices, daily_close
             )
         else:
             # We filter out DX-Y.NYB for endowus engine backtest
@@ -868,6 +1048,7 @@ def main():
                 run_daily,
                 rebalance_policy=rebalance_policy,
                 log_realized_weights=(rebalance_policy == "buy-and-hold"),
+                transaction_cost=TRANSACTION_COST,
             )
 
         curves[name] = curve
@@ -875,10 +1056,22 @@ def main():
         print(curve)
         print(f"  Final equity: ${curve.iloc[-1]:,.2f}")
 
-    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
+    # Inject actual historical Endowus curves.
+    # Metrics are computed only after a common alignment/rebase step.
+    load_endowus_historical(curves, [])
 
-    # Inject actual historical Endowus numbers
-    load_endowus_historical(curves, metrics_list)
+    aligned_curves, common_start = align_and_rebase_curves(curves)
+    if not aligned_curves:
+        print("No valid curves available after alignment.")
+        return
+
+    curves = aligned_curves
+    if common_start is not None:
+        print(
+            f"Aligned and rebased all curves from common start: {common_start.date()}"
+        )
+
+    metrics_list = [compute_metrics(c, n) for n, c in curves.items()]
     print("\n[Equity Curves]")
     print(curves)
     print("\n[Metrics Summary]")
@@ -896,6 +1089,14 @@ def main():
 
     plot_combined_curves(curves_df)
     plot_composition_comparison(weights_logs)
+
+    # Plot individual Endowus tickers over the same common timeframe
+    start_date = (
+        common_start if common_start is not None else pd.to_datetime(START_DATE)
+    )
+    plot_individual_ticker_growth(
+        daily_close, list(ENDOWUS_WEIGHTS.keys()), start_date, END_DATE
+    )
 
     print("Backtest complete. Results saved to results/ folder.")
 
