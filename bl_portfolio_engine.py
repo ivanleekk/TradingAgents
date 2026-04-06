@@ -5,8 +5,6 @@ Black-Litterman Portfolio Engine
 Evaluates multiple AI-driven portfolio strategies using Black-Litterman allocation.
 
 Strategies:
-  - Zero-View  : Market-implied equilibrium weights (benchmark)
-  - Human-BL   : Human Analyst Baseline using Black-Litterman
   - LLM-BL-A   : LLM Macro/Fundamentals variation
   - LLM-BL-B   : LLM News variation
   - LLM-BL-C   : LLM Technicals variation
@@ -44,18 +42,6 @@ TRANSACTION_COST = 0.001
 LOOKBACK_WEEKS = 52
 RISK_FREE_RATE = 0.04
 WEEKS_PER_YEAR = 52
-
-
-# Load baselines generated from Phase 1
-def load_human_baselines():
-    if not os.path.exists("data/etf_baselines.csv"):
-        print("Warning: data/etf_baselines.csv not found. Using empty baselines.")
-        return {}
-    df = pd.read_csv("data/etf_baselines.csv")
-    return dict(zip(df["Ticker"], df["Human_Analyst_Baseline_12M_Return"]))
-
-
-HUMAN_BASELINES = load_human_baselines()
 
 
 def get_market_caps(tickers):
@@ -399,22 +385,14 @@ def run_bl_backtest(
         views = {}
         confidences = {}
 
-        if strategy == "Zero-View":
-            # No views, we just use market prior
-            pass
-        elif strategy == "Human-BL":
-            # Use fixed human baselines, moderate confidence (5)
-            views = {t: HUMAN_BASELINES.get(t, 0.05) for t in active_set}
-            confidences = {t: 5.0 for t in active_set}
-        else:
-            # LLM strategies: fetch from signals
-            if not signals_df.empty:
-                day_signals = signals_df[signals_df["Date"] == date]
-                for _, row in day_signals.iterrows():
-                    t = row["Ticker"]
-                    if t in active_set:
-                        views[t] = row["target_return"]
-                        confidences[t] = row["confidence"]
+        # LLM strategies: fetch from signals
+        if not signals_df.empty:
+            day_signals = signals_df[signals_df["Date"] == date]
+            for _, row in day_signals.iterrows():
+                t = row["Ticker"]
+                if t in active_set:
+                    views[t] = row["target_return"]
+                    confidences[t] = row["confidence"]
 
         lookback_start = date - pd.Timedelta(weeks=LOOKBACK_WEEKS)
         history = daily_prices.loc[lookback_start:date, :]
@@ -516,8 +494,6 @@ def main():
     weights_logs = {}
 
     strategies = [
-        ("Zero-View", pd.DataFrame()),
-        ("Human-BL", pd.DataFrame()),
         ("LLM-BL-A", signals_A),
         ("LLM-BL-B", signals_B),
         ("LLM-BL-C", signals_C),

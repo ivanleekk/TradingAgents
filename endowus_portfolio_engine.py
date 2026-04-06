@@ -21,12 +21,15 @@ import glob
 import os
 import warnings
 import json
+import argparse
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 import numpy as np
 import pandas as pd
 import yfinance as yf
+import portfolio_common as common_portfolio
 from pypfopt import (
     BlackLittermanModel,
     risk_models,
@@ -43,7 +46,107 @@ INITIAL_EQUITY = 10_000.0
 TRANSACTION_COST = 0.001
 LOOKBACK_WEEKS = 52
 RISK_FREE_RATE = 0.04
+RISK_FREE_TICKER = "^IRX"
+RISK_FREE_SERIES = pd.Series(dtype=float)
 WEEKS_PER_YEAR = 52
+WEIGHT_SWING_ALERT_THRESHOLD = 0.80
+EFFICIENT_FRONTIER_L2_GAMMA = 0.5
+OPTIMIZER_METHOD = "max-sharpe"
+OPTIMIZER_RISK_AVERSION = 2.5
+OPTIMIZER_CHOICES = ("max-sharpe", "max-quadratic-utility", "min-volatility")
+
+
+LLM_DIAGNOSTICS_LOG: list[dict] = []
+
+
+def configure_optimizer(method: str = "max-sharpe", risk_aversion: float = 2.5):
+    global OPTIMIZER_METHOD, OPTIMIZER_RISK_AVERSION
+    OPTIMIZER_METHOD, OPTIMIZER_RISK_AVERSION = common_portfolio.set_optimizer_config(
+        method, risk_aversion, OPTIMIZER_CHOICES
+    )
+
+
+def configure_risk_free_rate(rate: float):
+    global RISK_FREE_RATE
+    RISK_FREE_RATE = common_portfolio.set_risk_free_rate(rate)
+
+
+def configure_risk_free_series(series: pd.Series | None):
+    global RISK_FREE_SERIES
+    if series is None:
+        RISK_FREE_SERIES = pd.Series(dtype=float)
+        return
+    clean = pd.Series(series.values, index=pd.to_datetime(series.index)).sort_index()
+    RISK_FREE_SERIES = clean.dropna()
+
+
+def load_us_3m_tbill_rate(start: str, end: str) -> float:
+    return common_portfolio.load_us_3m_tbill_rate(
+        start=start,
+        end=end,
+        ticker=RISK_FREE_TICKER,
+        fallback_rate=RISK_FREE_RATE,
+    )
+
+
+def load_us_3m_tbill_series(start: str, end: str) -> pd.Series:
+    return common_portfolio.load_us_3m_tbill_series(
+        start=start,
+        end=end,
+        ticker=RISK_FREE_TICKER,
+    )
+
+
+def optimize_efficient_frontier(
+    expected_rets, cov_matrix, context: str = ""
+) -> tuple[EfficientFrontier, str]:
+    return common_portfolio.optimize_efficient_frontier(
+        expected_rets=expected_rets,
+        cov_matrix=cov_matrix,
+        optimizer_method=OPTIMIZER_METHOD,
+        risk_aversion=OPTIMIZER_RISK_AVERSION,
+        risk_free_rate=RISK_FREE_RATE,
+        l2_gamma=EFFICIENT_FRONTIER_L2_GAMMA,
+        context=context,
+    )
+
+
+def is_invalid_view(value) -> bool:
+    """Return True when a view value is missing or non-finite (None/NaN/inf)."""
+    return common_portfolio.is_invalid_view(value)
+
+
+def resolve_view_value(views: dict, ticker: str, fallback: float) -> float:
+    return common_portfolio.resolve_view_value(views, ticker, fallback)
+
+
+def reset_diagnostics_log():
+    LLM_DIAGNOSTICS_LOG.clear()
+
+
+def _append_diagnostics_event(event: dict):
+    LLM_DIAGNOSTICS_LOG.append(event)
+
+
+def get_diagnostics_log_df() -> pd.DataFrame:
+    if not LLM_DIAGNOSTICS_LOG:
+        return pd.DataFrame()
+    return pd.DataFrame(LLM_DIAGNOSTICS_LOG)
+
+
+def save_diagnostics_log(
+    output_dir: str = "results/diagnostics",
+    file_name: str = "endowus_engine_llm_diagnostics.csv",
+):
+    os.makedirs(output_dir, exist_ok=True)
+    df = get_diagnostics_log_df()
+    out_path = os.path.join(output_dir, file_name)
+    if df.empty:
+        pd.DataFrame(columns=["EventType"]).to_csv(out_path, index=False)
+    else:
+        df.to_csv(out_path, index=False)
+    print(f"Saved LLM diagnostics to {out_path}")
+
 
 # Fallback proxy weights if raw Endowus composition cannot be loaded.
 DEFAULT_ENDOWUS_WEIGHTS = {
@@ -81,7 +184,7 @@ ENDOWUS_WEIGHTS = {
 }
 
 # Adjustable class-level allocation target used by optimization outputs.
-TARGET_EQUITY_ALLOCATION = 0.80
+TARGET_EQUITY_ALLOCATION = 0.60
 
 # Default class map for the fallback ETF universe.
 EQUITY_ASSETS = ["URTH", "SPY", "EEM", "VPL"]
@@ -207,139 +310,18 @@ def load_endowus_6040_weights(
     raw_json_path: str = "data/endowus_raw.json",
     id_to_yahoo_csv_path: str = "data/endowus_yfinance/instrument_id_to_yahoo.csv",
 ) -> dict[str, float]:
-    """Load 60|40 portfolio target weights and Yahoo symbols from Endowus raw data."""
-    if not os.path.exists(raw_json_path):
-        print(
-            f"[WARN] Endowus raw data not found at {raw_json_path}; using fallback weights."
-        )
-        return DEFAULT_ENDOWUS_WEIGHTS.copy()
-
-    if not os.path.exists(id_to_yahoo_csv_path):
-        print(
-            f"[WARN] Instrument to Yahoo mapping not found at {id_to_yahoo_csv_path}; "
-            "using fallback weights."
-        )
-        return DEFAULT_ENDOWUS_WEIGHTS.copy()
-
-    try:
-        with open(raw_json_path, "r") as f:
-            all_portfolios = json.load(f)
-
-        portfolio_6040 = next(
-            (p for p in all_portfolios if p.get("shortName") == "60 | 40"), None
-        )
-        if portfolio_6040 is None:
-            print("[WARN] Could not find shortName '60 | 40'; using fallback weights.")
-            return DEFAULT_ENDOWUS_WEIGHTS.copy()
-
-        funds = portfolio_6040.get("portfolioUnderlyingPage", {}).get(
-            "underlyingFundsCards", []
-        )
-        if not funds:
-            print("[WARN] 60|40 underlyingFundsCards empty; using fallback weights.")
-            return DEFAULT_ENDOWUS_WEIGHTS.copy()
-
-        mapping_df = pd.read_csv(id_to_yahoo_csv_path)
-        id_to_symbol = {
-            str(row["instrumentId"]): str(row["yahooSymbol"])
-            for _, row in mapping_df.iterrows()
-            if str(row.get("yahooSymbol", "")).strip()
-            and str(row.get("status", "")).startswith("resolved")
-        }
-
-        weights: dict[str, float] = {}
-        dropped = 0
-        for fund in funds:
-            instrument_id = str(fund.get("instrumentId", "")).strip()
-            target_weight = float(fund.get("targetWeight", 0.0))
-            symbol = id_to_symbol.get(instrument_id)
-
-            if not symbol or target_weight <= 0:
-                dropped += 1
-                continue
-
-            weights[symbol] = weights.get(symbol, 0.0) + target_weight
-
-        total_weight = sum(weights.values())
-        if not weights or total_weight <= 0:
-            print("[WARN] 60|40 produced no mapped symbols; using fallback weights.")
-            return DEFAULT_ENDOWUS_WEIGHTS.copy()
-
-        normalized_weights = {t: w / total_weight for t, w in weights.items()}
-        print(
-            f"Loaded Endowus 60|40 universe: {len(normalized_weights)} tickers "
-            f"(dropped {dropped} unmapped funds)."
-        )
-        return normalized_weights
-
-    except Exception as e:
-        print(f"[WARN] Failed loading 60|40 composition ({e}); using fallback weights.")
-        return DEFAULT_ENDOWUS_WEIGHTS.copy()
+    return common_portfolio.load_endowus_6040_weights(
+        raw_json_path=raw_json_path,
+        id_to_yahoo_csv_path=id_to_yahoo_csv_path,
+    )
 
 
 def load_bl_signal_csvs(data_dir: str) -> pd.DataFrame:
-    """Load JSON signals outputted by the LLM trader for the Endowus universe."""
-    files = glob.glob(os.path.join(data_dir, "*_decisions.csv"))
-    if not files:
-        print(f"No decision CSVs found in '{data_dir}', returning empty signals")
-        return pd.DataFrame()
-
-    frames = []
-    for fp in sorted(files):
-        ticker = os.path.basename(fp).split("_decisions.csv")[0]
-        try:
-            df = pd.read_csv(fp, parse_dates=["test_date"])
-            df = df.rename(columns={"test_date": "Date"})
-            df["Ticker"] = ticker
-
-            target_returns = []
-            confidences = []
-
-            import re
-
-            for idx, row in df.iterrows():
-                decision_str = str(row["decision"]).strip()
-
-                # Strip markdown blocks if present
-                if decision_str.startswith("```json"):
-                    decision_str = decision_str[7:]
-                if decision_str.startswith("```"):
-                    decision_str = decision_str[3:]
-                if decision_str.endswith("```"):
-                    decision_str = decision_str[:-3]
-                decision_str = decision_str.strip()
-
-                try:
-                    data = json.loads(decision_str)
-                    ret_str = str(data.get("Target_Return_30d", "")).replace("%", "")
-
-                    if not ret_str:
-                        target_returns.append(None)
-                    else:
-                        ret = float(ret_str) / 100.0
-                        annual_ret = (1 + ret) ** (365 / 30) - 1
-                        target_returns.append(annual_ret)
-
-                    conf = float(data.get("Confidence_Score", 5))
-                    confidences.append(conf)
-                except Exception as e:
-                    target_returns.append(None)
-                    confidences.append(5.0)
-
-            df["target_return"] = target_returns
-            df["confidence"] = confidences
-            frames.append(df[["Date", "Ticker", "target_return", "confidence"]])
-        except Exception as e:
-            print(f"Error parsing {fp}: {e}")
-
-    if not frames:
-        return pd.DataFrame()
-
-    return pd.concat(frames, ignore_index=True)
+    return common_portfolio.load_bl_signal_csvs(data_dir)
 
 
 def to_weekly_monday(df: pd.DataFrame) -> pd.DataFrame:
-    return df.resample("W-MON", label="left", closed="left").last()
+    return common_portfolio.to_weekly_monday(df)
 
 
 def download_prices(tickers: list[str], start: str, end: str):
@@ -368,36 +350,22 @@ def download_prices(tickers: list[str], start: str, end: str):
 def get_execution_prices(
     daily_open: pd.DataFrame, weekly_dates: pd.DatetimeIndex
 ) -> pd.DataFrame:
-    trading_days = daily_open.index
-    rows = {}
-    for monday in weekly_dates:
-        future = trading_days[trading_days > monday]
-        if len(future) > 0:
-            rows[monday] = daily_open.loc[future[0]]
-        else:
-            on_or_after = trading_days[trading_days >= monday]
-            if len(on_or_after) > 0:
-                rows[monday] = daily_open.loc[on_or_after[0]]
-    exec_df = pd.DataFrame(rows).T.sort_index()
-    exec_df.index.name = "Date"
-    return exec_df
+    return common_portfolio.get_execution_prices(daily_open, weekly_dates)
 
 
 def get_latest_price_on_or_before(
     data: pd.DataFrame, ticker: str, as_of: pd.Timestamp
 ) -> float | None:
     """Return latest non-null price at or before as_of for ticker."""
-    if ticker not in data.columns:
-        return None
-
-    hist = data.loc[:as_of, ticker].dropna()
-    if hist.empty:
-        return None
-    return float(hist.iloc[-1])
+    return common_portfolio.get_latest_price_on_or_before(data, ticker, as_of)
 
 
 def compute_bl_weights(
-    active_set: list[str], price_history: pd.DataFrame, views: dict, confidences: dict
+    active_set: list[str],
+    price_history: pd.DataFrame,
+    views: dict,
+    confidences: dict,
+    diagnostics_context: dict | None = None,
 ) -> dict[str, float]:
     """
     Computes Black-Litterman weights.
@@ -435,11 +403,7 @@ def compute_bl_weights(
         # Format views. If LLM gave None, fallback to the calculated market prior
         Q = pd.Series(
             {
-                t: (
-                    views.get(t)
-                    if views.get(t) is not None
-                    else market_prior.get(t, 0.05)
-                )
+                t: resolve_view_value(views, t, float(market_prior.get(t, 0.05)))
                 for t in active_set
             }
         )
@@ -455,15 +419,33 @@ def compute_bl_weights(
         bl_returns = bl.bl_returns()
         bl_cov = bl.bl_cov()
 
-        # Optimize for max sharpe
-        ef = EfficientFrontier(bl_returns, bl_cov)
-        try:
-            ef.max_sharpe(risk_free_rate=RISK_FREE_RATE)
-        except:
-            ef = EfficientFrontier(bl_returns, bl_cov)
-            ef.min_volatility()
+        context = (
+            f"{diagnostics_context.get('strategy') if diagnostics_context else 'Unknown'}, "
+            f"{diagnostics_context.get('date') if diagnostics_context else 'Unknown'}"
+        )
+        ef, optimizer_mode = optimize_efficient_frontier(
+            bl_returns, bl_cov, context=context
+        )
 
         cleaned = ef.clean_weights()
+        cleaned_dict = {str(k): float(v) for k, v in cleaned.items()}
+        raw_cleaned = {str(t): float(cleaned_dict.get(str(t), 0.0)) for t in active_set}
+
+        if diagnostics_context is not None:
+            _append_diagnostics_event(
+                {
+                    "EventType": "optimizer_result",
+                    "Strategy": diagnostics_context.get("strategy"),
+                    "Date": diagnostics_context.get("date"),
+                    "OptimizerMode": optimizer_mode,
+                    "ActiveSetSize": len(active_set),
+                    "ActiveSet": json.dumps(active_set),
+                    "Views": json.dumps(views, default=float),
+                    "Confidences": json.dumps(confidences, default=float),
+                    "RawCleanedWeights": json.dumps(raw_cleaned, default=float),
+                }
+            )
+
         weights = {str(t): float(w) for t, w in cleaned.items() if w > 1e-6}
         if not weights:
             return fallback_weights
@@ -569,6 +551,7 @@ def run_endowus_backtest(
     weights_log = {}
     last_target_weights: dict[str, float] = {}
     has_rebalanced_once = False
+    prev_active_set: set[str] = set()
 
     tickers = list(ENDOWUS_WEIGHTS.keys())
 
@@ -594,6 +577,30 @@ def run_endowus_backtest(
             exec_prices[t] = exec_p
 
         active_set = list(exec_prices.keys())
+        active_set_now = set(active_set)
+        if active_set_now != prev_active_set:
+            added = sorted(active_set_now - prev_active_set)
+            removed = sorted(prev_active_set - active_set_now)
+            if prev_active_set:
+                _append_diagnostics_event(
+                    {
+                        "EventType": "active_set_change",
+                        "Strategy": strategy,
+                        "Date": pd.to_datetime(date),
+                        "PrevActiveSetSize": len(prev_active_set),
+                        "ActiveSetSize": len(active_set_now),
+                        "Added": json.dumps(added),
+                        "Removed": json.dumps(removed),
+                        "ActiveSet": json.dumps(sorted(active_set_now)),
+                    }
+                )
+                if added or removed:
+                    print(
+                        f"[INFO] Active set changed for {strategy} on {pd.to_datetime(date).date()}"
+                        f" | +{added} -{removed}"
+                    )
+            prev_active_set = active_set_now
+
         full_universe_available = len(active_set) == len(tickers)
 
         if rebalance_policy == "weekly":
@@ -608,6 +615,11 @@ def run_endowus_backtest(
             )
 
         if should_rebalance:
+            configure_risk_free_rate(
+                common_portfolio.get_risk_free_rate_for_date(
+                    pd.to_datetime(date), RISK_FREE_SERIES, RISK_FREE_RATE
+                )
+            )
             views = {}
             confidences = {}
 
@@ -636,7 +648,55 @@ def run_endowus_backtest(
                 lookback_start = date - pd.Timedelta(weeks=LOOKBACK_WEEKS)
                 history = daily_prices.loc[lookback_start:date, :]
 
-                weights = compute_bl_weights(active_set, history, views, confidences)
+                weights = compute_bl_weights(
+                    active_set,
+                    history,
+                    views,
+                    confidences,
+                    diagnostics_context={"strategy": strategy, "date": date},
+                )
+
+                _append_diagnostics_event(
+                    {
+                        "EventType": "llm_views",
+                        "Strategy": strategy,
+                        "Date": pd.to_datetime(date),
+                        "ActiveSetSize": len(active_set),
+                        "ActiveSet": json.dumps(active_set),
+                        "Views": json.dumps(views, default=float),
+                        "Confidences": json.dumps(confidences, default=float),
+                    }
+                )
+
+                if last_target_weights:
+                    union_assets = set(last_target_weights.keys()) | set(weights.keys())
+                    max_abs_change = max(
+                        abs(
+                            float(weights.get(asset, 0.0))
+                            - float(last_target_weights.get(asset, 0.0))
+                        )
+                        for asset in union_assets
+                    )
+                    if max_abs_change >= WEIGHT_SWING_ALERT_THRESHOLD:
+                        print(
+                            f"[ALERT] Large weight swing for {strategy} on {pd.to_datetime(date).date()}"
+                            f" | max abs change={max_abs_change:.2%}"
+                        )
+                        _append_diagnostics_event(
+                            {
+                                "EventType": "weight_swing_alert",
+                                "Strategy": strategy,
+                                "Date": pd.to_datetime(date),
+                                "Threshold": WEIGHT_SWING_ALERT_THRESHOLD,
+                                "MaxAbsWeightChange": float(max_abs_change),
+                                "Views": json.dumps(views, default=float),
+                                "Confidences": json.dumps(confidences, default=float),
+                                "PrevWeights": json.dumps(
+                                    last_target_weights, default=float
+                                ),
+                                "NewWeights": json.dumps(weights, default=float),
+                            }
+                        )
 
             te = port.total_equity(val_prices)
             port.buy_target_weights(weights, exec_prices, te)
@@ -677,7 +737,12 @@ def compute_metrics(equity: pd.Series, name: str = "") -> dict:
 
     ann_return = (1 + total_return) ** (1 / n_years) - 1 if n_years > 0 else 0.0
 
-    period_rf = (1 + RISK_FREE_RATE) ** (1 / periods_per_year) - 1
+    period_rf = common_portfolio.get_period_risk_free_returns(
+        periodic_returns.index,
+        periods_per_year,
+        RISK_FREE_SERIES,
+        RISK_FREE_RATE,
+    )
     excess = periodic_returns - period_rf
     sharpe = (
         (excess.mean() / excess.std()) * np.sqrt(periods_per_year)
@@ -747,7 +812,12 @@ def load_endowus_historical(curves: dict, metrics_list: list):
                 if normalized_curve is not None and len(normalized_curve) > 1:
                     monthly_returns = normalized_curve.pct_change().dropna()
                     if not monthly_returns.empty:
-                        monthly_rf = (1 + RISK_FREE_RATE) ** (1 / 12) - 1
+                        monthly_rf = common_portfolio.get_period_risk_free_returns(
+                            monthly_returns.index,
+                            12,
+                            RISK_FREE_SERIES,
+                            RISK_FREE_RATE,
+                        )
                         monthly_excess = monthly_returns - monthly_rf
                         vol = monthly_excess.std()
                         if vol > 0:
@@ -837,18 +907,85 @@ def plot_equity_curves(
     ax.xaxis.set_major_locator(mdates.MonthLocator(interval=6))
     plt.xticks(rotation=45)
 
-    # Place legend outside to not obscure the curves
-    ax.legend(bbox_to_anchor=(1.05, 1), loc="upper left", framealpha=0.9)
+    # Place legend below the plot so portfolio names are fully visible
+    handles, labels = ax.get_legend_handles_labels()
+    legend_cols = 1 if len(labels) <= 2 else 2
+    ax.legend(
+        handles,
+        labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.18),
+        ncol=legend_cols,
+        framealpha=0.9,
+    )
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
 
-    plt.savefig(output_path, dpi=150)
+    plt.savefig(output_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
     plt.close()
     print(f"Plot saved to {output_path}")
 
 
+def _run_single_strategy_endowus(payload: dict) -> dict:
+    name = payload["name"]
+    sigs = payload["signals"]
+
+    if name.startswith("LLM") and sigs.empty:
+        return {"name": name, "skipped": True}
+
+    curve, wlog = run_endowus_backtest(
+        name,
+        sigs,
+        payload["weekly_prices"],
+        payload["weekly_exec_prices"],
+        payload["daily_prices"],
+        transaction_cost=TRANSACTION_COST,
+    )
+    return {"name": name, "curve": curve, "weights": wlog, "skipped": False}
+
+
+def _run_single_strategy_endowus_worker(payload: dict) -> dict:
+    configure_optimizer(payload["optimizer_method"], payload["risk_aversion"])
+    configure_risk_free_series(payload.get("risk_free_series"))
+    configure_risk_free_rate(payload["risk_free_rate"])
+    return _run_single_strategy_endowus(payload)
+
+
 def main():
     print("=" * 60)
+
+    parser = argparse.ArgumentParser(description="Run Endowus BL portfolio backtests")
+    parser.add_argument(
+        "--optimizer",
+        choices=list(OPTIMIZER_CHOICES),
+        default=OPTIMIZER_METHOD,
+        help="Optimizer to solve EfficientFrontier",
+    )
+    parser.add_argument(
+        "--risk-aversion",
+        type=float,
+        default=OPTIMIZER_RISK_AVERSION,
+        help="Risk aversion for max-quadratic-utility",
+    )
+    parser.add_argument(
+        "--parallel-workers",
+        type=int,
+        default=1,
+        help="Number of worker processes to run strategies in parallel",
+    )
+    args = parser.parse_args()
+    configure_optimizer(args.optimizer, args.risk_aversion)
+    configure_risk_free_series(load_us_3m_tbill_series(START_DATE, END_DATE))
+    configure_risk_free_rate(
+        common_portfolio.get_risk_free_rate_for_date(
+            pd.to_datetime(END_DATE), RISK_FREE_SERIES, RISK_FREE_RATE
+        )
+    )
+    print(
+        f"Optimizer: {OPTIMIZER_METHOD}"
+        f" (risk_aversion={OPTIMIZER_RISK_AVERSION}, l2_gamma={EFFICIENT_FRONTIER_L2_GAMMA})"
+    )
+    print(f"Risk-free rate: {RISK_FREE_RATE:.4%} ({RISK_FREE_TICKER})")
     print("  Endowus Black-Litterman Portfolio Engine")
     print("=" * 60)
 
@@ -885,23 +1022,62 @@ def main():
         ("LLM-BL-D", signals_D),
     ]
 
-    for name, sigs in strategies:
-        print(f"Running {name}...")
-        if name.startswith("LLM") and sigs.empty:
-            print(f"  Skipping {name} - no signal data.")
-            continue
+    strategy_payloads = [
+        {
+            "name": name,
+            "signals": sigs,
+            "weekly_prices": weekly_prices,
+            "weekly_exec_prices": weekly_exec_prices,
+            "daily_prices": daily_prices,
+            "optimizer_method": OPTIMIZER_METHOD,
+            "risk_aversion": OPTIMIZER_RISK_AVERSION,
+            "risk_free_rate": RISK_FREE_RATE,
+            "risk_free_series": RISK_FREE_SERIES,
+        }
+        for name, sigs in strategies
+    ]
 
-        curve, wlog = run_endowus_backtest(
-            name,
-            sigs,
-            weekly_prices,
-            weekly_exec_prices,
-            daily_prices,
-            transaction_cost=TRANSACTION_COST,
-        )
-        curves[name] = curve
-        weights_logs[name] = wlog
-        print(f"  Final equity: ${curve.iloc[-1]:,.2f}")
+    if args.parallel_workers > 1:
+        print(f"Running strategies in parallel with {args.parallel_workers} workers...")
+        results_map: dict[str, dict] = {}
+        with ProcessPoolExecutor(max_workers=args.parallel_workers) as executor:
+            future_map = {
+                executor.submit(_run_single_strategy_endowus_worker, payload): payload[
+                    "name"
+                ]
+                for payload in strategy_payloads
+            }
+            for future in as_completed(future_map):
+                name = future_map[future]
+                try:
+                    result = future.result()
+                    results_map[name] = result
+                    if result.get("skipped"):
+                        print(f"  Skipping {name} - no signal data.")
+                    else:
+                        print(
+                            f"Completed {name}: Final equity ${result['curve'].iloc[-1]:,.2f}"
+                        )
+                except Exception as ex:
+                    print(f"[ERROR] Strategy failed for {name}: {ex}")
+
+        for name, _ in strategies:
+            result = results_map.get(name)
+            if not result or result.get("skipped"):
+                continue
+            curves[name] = result["curve"]
+            weights_logs[name] = result["weights"]
+    else:
+        for payload in strategy_payloads:
+            name = payload["name"]
+            print(f"Running {name}...")
+            result = _run_single_strategy_endowus(payload)
+            if result.get("skipped"):
+                print(f"  Skipping {name} - no signal data.")
+                continue
+            curves[name] = result["curve"]
+            weights_logs[name] = result["weights"]
+            print(f"  Final equity: ${result['curve'].iloc[-1]:,.2f}")
 
     # Inject actual historical Endowus curves.
     # Metrics are recomputed after alignment/rebasing for apples-to-apples comparison.

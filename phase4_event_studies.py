@@ -6,23 +6,24 @@ Evaluates the Black-Litterman portfolios during specific market shocks.
 
 Events:
   - COVID-19 Crash & Rebound: Feb 1, 2020 - May 31, 2020
-  - Inflation Print Shock: Nov 1, 2021 - Jan 31, 2022
+  - The Emerging Market Divergence: Aug 1, 2021 - Dec 31, 2021
+  - The Inflation Print Shock: Nov 1, 2021 - Jan 31, 2022
   - Russia-Ukraine Invasion: Feb 1, 2022 - Apr 30, 2022
+  - The BOJ Yield Curve Surprise: Dec 1, 2022 - Jan 31, 2023
   - Regional Banking Crisis: Mar 1, 2023 - May 31, 2023
 """
 
+import os
+import warnings
+import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
-import os
-import numpy as np
-import warnings
-
-warnings.filterwarnings("ignore")
-
 import pandas_datareader.data as web
 import statsmodels.api as sm
 from datetime import datetime
+
+warnings.filterwarnings("ignore")
 
 RISK_FREE_RATE = 0.04
 WEEKS_PER_YEAR = 52
@@ -36,35 +37,53 @@ EVENTS = {
     "Regional Banking Crisis": ("2023-03-01", "2023-05-31"),
 }
 
+EXCLUDED_STRATEGY_PATTERNS = (
+    "human-bl",
+    "zero-view",
+    "endowus-60/40-norebalanceifmissing",
+    "endowus-60/40-buyhold",
+)
 
-def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=None):
+
+def is_excluded_strategy(strategy_name: str) -> bool:
+    strategy_name_lc = str(strategy_name).lower()
+    return any(pat in strategy_name_lc for pat in EXCLUDED_STRATEGY_PATTERNS)
+
+
+def analyze_event(
+    event_name,
+    base_start,
+    base_end,
+    equity_curves_df,
+    ff_data_weekly=None,
+    ff_data_monthly=None,
+):
     """
-    Analyzes an expanded event window (2 months prior to 5 months post)
-    and computes standard metrics + CAPM, FF3, and FF5 alphas.
-    Normalizes curves to 100 at the actual event start date.
+    Analyzes an expanded event window dynamically handling both Weekly and Monthly equity curves.
     """
     event_start_dt = pd.to_datetime(base_start)
     start_date = event_start_dt - pd.DateOffset(months=5)
     end_date = pd.to_datetime(base_end) + pd.DateOffset(months=5)
 
-    # Filter the equity curves for the expanded event window
+    visible_cols = [
+        col for col in equity_curves_df.columns if not is_excluded_strategy(col)
+    ]
+    if not visible_cols:
+        return None, pd.DataFrame()
+
     mask = (equity_curves_df.index >= start_date) & (equity_curves_df.index <= end_date)
-    window_df = equity_curves_df.loc[mask].copy()
+    window_df = equity_curves_df.loc[mask, visible_cols].copy()
+
     if window_df.empty:
-        print(f"No data for {event_name} ({start_date.date()} to {end_date.date()})")
         return None, window_df
 
-    # Normalize each strategy to its value on the event start date.
     norm_window = window_df.copy() * np.nan
     for strategy in window_df.columns:
         valid_data = window_df[strategy].dropna()
         if valid_data.empty:
             continue
 
-        # Fetch the value on or immediately preceding the event start date
         base_value = valid_data.asof(event_start_dt)
-
-        # Fallback: if the strategy starts after the event, use its first valid value
         if pd.isna(base_value) or base_value == 0:
             base_value = valid_data.iloc[0]
             if pd.isna(base_value) or base_value == 0:
@@ -75,91 +94,97 @@ def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=No
     metrics = []
 
     for strategy in norm_window.columns:
-        curve = norm_window[strategy]
-        valid_curve = curve.dropna()
-        if valid_curve.empty:
+        valid_curve = norm_window[strategy].dropna()
+        if len(valid_curve) < 2:
             continue
 
-        # Calculate return from the event start date to the end of the window
+        # 1. FREQUENCY DETECTION
+        # Calculate the median days between data points
+        median_days = valid_curve.index.to_series().diff().dt.days.median()
+
+        if median_days > 20:  # Monthly frequency
+            ann_factor = 12
+            ff_data = ff_data_monthly
+        else:  # Weekly frequency
+            ann_factor = 52
+            ff_data = ff_data_weekly
+
+        # Return & Drawdown
         total_return = (valid_curve.iloc[-1] / 100.0) - 1
-
-        # Calculate max drawdown in window
         rolling_max = valid_curve.cummax()
-        drawdowns = (valid_curve - rolling_max) / rolling_max
-        max_dd = drawdowns.min()
+        max_dd = ((valid_curve - rolling_max) / rolling_max).min()
 
-        # Compute annualized return using elapsed calendar time in the window
         elapsed_days = (valid_curve.index[-1] - valid_curve.index[0]).days
         elapsed_years = elapsed_days / 365.25 if elapsed_days > 0 else np.nan
         ann_return = (
-            (1 + total_return) ** (1 / elapsed_years) - 1
-            if pd.notna(elapsed_years) and elapsed_years > 0
+            ((1 + total_return) ** (1 / elapsed_years) - 1)
+            if elapsed_years > 0
             else np.nan
         )
 
-        # Event-window Sharpe: annualized from weekly-aligned returns
+        # 2. DYNAMIC SHARPE RATIO
         sharpe = np.nan
-        strategy_returns = valid_curve.pct_change().dropna()
-        if len(strategy_returns) > 1:
-            sharpe_returns = strategy_returns
-            if ff_data is not None:
-                ff_idx = strategy_returns.index.intersection(ff_data.index)
-                if len(ff_idx) > 1:
-                    sharpe_returns = strategy_returns.loc[ff_idx]
+        str_returns = valid_curve.pct_change().dropna()
 
-            if len(sharpe_returns) > 1:
-                excess = sharpe_returns - (RISK_FREE_RATE / WEEKS_PER_YEAR)
-                vol = excess.std()
-                if vol > 0:
-                    sharpe = (excess.mean() / vol) * np.sqrt(WEEKS_PER_YEAR)
-                else:
-                    sharpe = 0.0
+        if len(str_returns) > 1:
+            excess = str_returns - (0.04 / ann_factor)  # Assuming 4% Risk-Free Rate
+            vol = excess.std()
+            if vol > 0:
+                sharpe = (excess.mean() / vol) * np.sqrt(ann_factor)
+            else:
+                sharpe = 0.0
 
         calmar = (
-            ann_return / abs(max_dd)
-            if pd.notna(ann_return) and pd.notna(max_dd) and max_dd != 0
-            else np.nan
+            ann_return / abs(max_dd) if pd.notna(ann_return) and max_dd != 0 else np.nan
         )
 
-        # Compute Alpha Models if Fama-French data is available
+        # 3. DYNAMIC ALPHA REGRESSION
         capm_alpha, ff3_alpha, ff5_alpha = np.nan, np.nan, np.nan
 
-        if ff_data is not None and len(valid_curve) > 2:
-            # We need returns for regressions (normalization scalar does not affect pct_change)
-            str_returns = valid_curve.pct_change().dropna()
+        if ff_data is not None and len(str_returns) > 2:
+            # To handle end-of-month vs start-of-month indexing quirks, convert to period
+            if ann_factor == 12:
+                # Align on Year-Month for monthly curves
+                str_returns.index = str_returns.index.to_period("M")
+                ff_aligned = ff_data.copy()
+                if not isinstance(ff_aligned.index, pd.PeriodIndex):
+                    ff_aligned.index = pd.to_datetime(
+                        ff_aligned.index.astype(str)
+                    ).to_period("M")
+            else:
+                ff_aligned = ff_data
 
-            # Align with weekly FF data
-            common_idx = str_returns.index.intersection(ff_data.index)
-            if len(common_idx) > 5:  # Need sufficient datapoints
-                y = (
-                    str_returns.loc[common_idx] * 100
-                )  # convert to percentage to match FF data scale
-                ff = ff_data.loc[common_idx]
+            common_idx = str_returns.index.intersection(ff_aligned.index)
 
-                # Excess return
+            if len(common_idx) > 3:  # Need minimum data points for OLS
+                y = str_returns.loc[common_idx] * 100
+                ff = ff_aligned.loc[common_idx]
                 y_ex = y - ff["RF"]
 
-                # CAPM: Regress on Mkt-RF
                 try:
                     X_capm = sm.add_constant(ff["Mkt-RF"])
-                    capm_model = sm.OLS(y_ex, X_capm).fit()
-                    capm_alpha = capm_model.params.get("const", np.nan) * 52
+                    capm_alpha = (
+                        sm.OLS(y_ex, X_capm).fit().params.get("const", np.nan)
+                        * ann_factor
+                    )
                 except:
                     pass
 
-                # FF3: Mkt-RF, SMB, HML
                 try:
                     X_ff3 = sm.add_constant(ff[["Mkt-RF", "SMB", "HML"]])
-                    ff3_model = sm.OLS(y_ex, X_ff3).fit()
-                    ff3_alpha = ff3_model.params.get("const", np.nan) * 52
+                    ff3_alpha = (
+                        sm.OLS(y_ex, X_ff3).fit().params.get("const", np.nan)
+                        * ann_factor
+                    )
                 except:
                     pass
 
-                # FF5: Mkt-RF, SMB, HML, RMW, CMA
                 try:
                     X_ff5 = sm.add_constant(ff[["Mkt-RF", "SMB", "HML", "RMW", "CMA"]])
-                    ff5_model = sm.OLS(y_ex, X_ff5).fit()
-                    ff5_alpha = ff5_model.params.get("const", np.nan) * 52
+                    ff5_alpha = (
+                        sm.OLS(y_ex, X_ff5).fit().params.get("const", np.nan)
+                        * ann_factor
+                    )
                 except:
                     pass
 
@@ -180,20 +205,17 @@ def analyze_event(event_name, base_start, base_end, equity_curves_df, ff_data=No
                 "FF5 Alpha (Ann)": (
                     f"{ff5_alpha:.2f}%" if pd.notna(ff5_alpha) else "N/A"
                 ),
-                "_return": total_return,
-                "_max_dd": max_dd,
             }
         )
 
     return pd.DataFrame(metrics), norm_window
 
 
-def load_fama_french_data(start, end):
+def load_fama_french_data_weekly(start, end):
     """Fetches Fama-French 5-Factor daily data, compounds it to weekly (Monday), and caches it."""
     cache_path = "data/ff5_factors_weekly.csv"
     if os.path.exists(cache_path):
         ff_weekly = pd.read_csv(cache_path, index_col=0, parse_dates=True)
-        # Verify it covers our needed range
         if (
             not ff_weekly.empty
             and ff_weekly.index[0] <= pd.to_datetime(start)
@@ -203,7 +225,6 @@ def load_fama_french_data(start, end):
 
     print("Fetching and compounding Fama-French 5-Factor data to weekly...")
     try:
-        # F-F_Research_Data_5_Factors_2x3_daily is standard for FF5
         ff_dict = web.DataReader(
             "F-F_Research_Data_5_Factors_2x3_daily", "famafrench", start, end
         )
@@ -222,27 +243,63 @@ def load_fama_french_data(start, end):
         ff_weekly.to_csv(cache_path)
         return ff_weekly
     except Exception as e:
-        print(f"Error fetching/compounding FF data: {e}")
+        print(f"Error fetching/compounding FF weekly data: {e}")
+        return None
+
+
+def load_fama_french_data_monthly(start, end):
+    """Fetches Fama-French 5-Factor monthly data and caches it."""
+    cache_path = "data/ff5_factors_monthly.csv"
+    if os.path.exists(cache_path):
+        ff_monthly = pd.read_csv(cache_path, index_col=0)
+        # Convert to PeriodIndex for robust monthly alignment
+        ff_monthly.index = pd.to_datetime(ff_monthly.index.astype(str)).to_period("M")
+        return ff_monthly
+
+    print("Fetching Fama-French 5-Factor monthly data...")
+    try:
+        # Standard monthly 5-factor dataset
+        ff_dict = web.DataReader(
+            "F-F_Research_Data_5_Factors_2x3", "famafrench", start, end
+        )
+        ff_monthly = ff_dict[0]
+
+        os.makedirs("data", exist_ok=True)
+        ff_monthly.to_csv(cache_path)
+        return ff_monthly
+    except Exception as e:
+        print(f"Error fetching FF monthly data: {e}")
         return None
 
 
 def plot_event(event_name, norm_window, output_dir):
-    """Plots the normalized equity curves with a vertical line at the event start."""
-    plt.figure(figsize=(10, 6))
+    """Plots the normalized equity curves with a vertical line at the event start.
+    Added: filter_curves (list of substrings or exact names) to select which curves to plot.
+    """
 
-    # Look up the event start date from the global EVENTS dict
+    def _should_plot(strategy, filter_curves):
+        if is_excluded_strategy(strategy):
+            return False
+        if filter_curves is None:
+            return True
+        for f in filter_curves:
+            if f in strategy:
+                return True
+        return False
+
+    plt.figure(figsize=(10, 11))
+
     event_start_str = EVENTS[event_name][0]
     event_start_dt = pd.to_datetime(event_start_str)
 
-    # Define base styles for the legacy standard portfolios if they appear
-    base_styles = {
-        "Zero-View": {"color": "#9E9E9E", "lw": 2.0, "ls": "-"},
-        "Human-BL": {"color": "#2196F3", "lw": 2.0, "ls": "-"},
-    }
+    base_styles = {}
+
+    filter_curves = getattr(plot_event, "filter_curves", None)
 
     for strategy in norm_window.columns:
+        if not _should_plot(strategy, filter_curves):
+            continue
         if "Endowus_Actual" in strategy:
-            # Render the actual funds as dashed lines with lower alpha so they form a "background" spectrum
             plt.plot(
                 norm_window.index,
                 norm_window[strategy],
@@ -252,7 +309,6 @@ def plot_event(event_name, norm_window, output_dir):
                 alpha=0.7,
             )
         elif strategy == "Endowus-60/40":
-            # Our proxy benchmark
             plt.plot(
                 norm_window.index,
                 norm_window[strategy],
@@ -262,7 +318,6 @@ def plot_event(event_name, norm_window, output_dir):
                 ls="-",
             )
         elif strategy == "Systematic-BL":
-            # Our systematic baseline
             plt.plot(
                 norm_window.index,
                 norm_window[strategy],
@@ -272,16 +327,13 @@ def plot_event(event_name, norm_window, output_dir):
                 ls="-",
             )
         elif "LLM-BL" in strategy:
-            # Our AI portfolios
             plt.plot(
                 norm_window.index, norm_window[strategy], label=strategy, lw=2.0, ls="-"
             )
         else:
-            # Legacy or unknown strategies
             s = base_styles.get(strategy, {"color": "black", "lw": 1.5, "ls": "-"})
             plt.plot(norm_window.index, norm_window[strategy], label=strategy, **s)
 
-    # --- NEW: Add vertical line for event start (t=0) ---
     plt.axvline(
         x=event_start_dt,
         color="black",
@@ -297,22 +349,28 @@ def plot_event(event_name, norm_window, output_dir):
     plt.ylabel("Normalized Value")
     plt.xlabel("Date")
 
-    # Formatting x-axis
     ax = plt.gca()
     ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
     plt.xticks(rotation=45)
 
-    # Deduplicate legend labels (in case of multiple identical labels)
     handles, labels = plt.gca().get_legend_handles_labels()
     by_label = dict(zip(labels, handles))
-    plt.legend(by_label.values(), by_label.keys(), loc="best")
+    legend_cols = min(3, max(1, len(by_label)))
+    plt.legend(
+        by_label.values(),
+        by_label.keys(),
+        loc="upper center",
+        bbox_to_anchor=(0.5, -0.62),
+        ncol=legend_cols,
+        frameon=False,
+    )
 
     plt.grid(True, alpha=0.3)
-    plt.tight_layout()
+    plt.tight_layout(rect=(0.0, 0.02, 1.0, 1.0))
 
     filename = event_name.replace(" ", "_").replace("-", "_").lower() + ".png"
     filepath = os.path.join(output_dir, filename)
-    plt.savefig(filepath, dpi=150)
+    plt.savefig(filepath, dpi=150, bbox_inches="tight")
     plt.close()
     return filepath
 
@@ -349,7 +407,6 @@ def generate_markdown_report(all_metrics_df, event_plots, output_dir):
                     "FF3 Alpha (Ann)",
                     "FF5 Alpha (Ann)",
                 ]
-                # Only display alpha columns if they exist in the dataframe (i.e., we successfully computed them)
                 available_cols = [c for c in display_cols if c in event_metrics.columns]
                 markdown_table = event_metrics[available_cols].to_markdown(index=False)
                 f.write(markdown_table + "\n\n")
@@ -364,14 +421,12 @@ def main():
     print("  Stress Testing & Event Studies Engine")
     print("=" * 60)
 
-    # First load standard BL equity curves if available
     curves_path = "results/bl_equity_curves.csv"
     if os.path.exists(curves_path):
         df_bl = pd.read_csv(curves_path, index_col=0, parse_dates=True)
     else:
         df_bl = pd.DataFrame()
 
-    # Load endowus systematic curves if available
     endowus_path = "results/endowus_systematic_equity_curves.csv"
     if os.path.exists(endowus_path):
         df_endowus = pd.read_csv(endowus_path, index_col=0, parse_dates=True)
@@ -380,16 +435,12 @@ def main():
 
     if df_bl.empty and df_endowus.empty:
         print(
-            f"Error: Could not find any curves data. Run bl_portfolio_engine.py or systematic_bl_baseline.py first."
+            "Error: Could not find any curves data. Run bl_portfolio_engine.py or systematic_bl_baseline.py first."
         )
         return
 
-    # Combine dataframes for plotting everything
     if not df_bl.empty and not df_endowus.empty:
-        # Align indexes and combine columns, dropping overlapping duplicates
         df = df_bl.join(df_endowus, how="outer", rsuffix="_endowus")
-
-        # If there are overlapping columns, prioritize the endowus ones as they have the updated logic
         for col in df_endowus.columns:
             if f"{col}_endowus" in df.columns:
                 df[col] = df[f"{col}_endowus"]
@@ -399,22 +450,40 @@ def main():
     else:
         df = df_bl
 
-    # Fill missing values from prior observations after aligning series.
     df = df.sort_index().ffill()
+    excluded_cols = [col for col in df.columns if is_excluded_strategy(col)]
+    if excluded_cols:
+        df = df.drop(columns=excluded_cols)
 
     output_dir = "results/event_studies"
     os.makedirs(output_dir, exist_ok=True)
 
-    # Load Fama-French data for the whole window + padding
     min_date = pd.to_datetime(min([d[0] for d in EVENTS.values()])) - pd.DateOffset(
         months=1
     )
     max_date = pd.to_datetime(max([d[1] for d in EVENTS.values()])) + pd.DateOffset(
         months=1
     )
-    ff_data = load_fama_french_data(
+
+    # Load both frequencies of Fama-French data
+    ff_weekly = load_fama_french_data_weekly(
         min_date.strftime("%Y-%m-%d"), max_date.strftime("%Y-%m-%d")
     )
+    ff_monthly = load_fama_french_data_monthly(
+        min_date.strftime("%Y-%m-%d"), max_date.strftime("%Y-%m-%d")
+    )
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--filter-curves",
+        nargs="*",
+        default=None,
+        help="List of substrings or names to filter which curves to plot (case-sensitive)",
+    )
+    args, _ = parser.parse_known_args()
+    filter_curves = args.filter_curves
 
     all_metrics = []
     event_plots = {}
@@ -422,10 +491,17 @@ def main():
     for event_name, dates in EVENTS.items():
         print(f"Analyzing {event_name}...")
         metrics_df, norm_window = analyze_event(
-            event_name, dates[0], dates[1], df, ff_data=ff_data
+            event_name,
+            dates[0],
+            dates[1],
+            df,
+            ff_data_weekly=ff_weekly,
+            ff_data_monthly=ff_monthly,
         )
+
         if metrics_df is not None:
             all_metrics.append(metrics_df)
+            setattr(plot_event, "filter_curves", filter_curves)
             img_path = plot_event(event_name, norm_window, output_dir)
             event_plots[event_name] = img_path
 

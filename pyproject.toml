@@ -23,6 +23,7 @@ dependencies = [
     "langchain-openai>=0.3.23",
     "langgraph>=0.4.8",
     "llama-cpp-python>=0.3.16",
+    "openbb>=4.7.1",
     "pandas>=2.3.0",
     "pandas-datareader>=0.10.0",
     "parsel>=1.10.0",

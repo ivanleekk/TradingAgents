@@ -1,0 +1,552 @@
+\documentclass[12pt]{report}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{setspace}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[hidelinks]{hyperref}
+\usepackage{cleveref}
+
+\graphicspath{{./images/}{./assets/}{./results/}{./results/event_studies/}{./results/thesis_plots/}}
+
+\setstretch{1.2}
+
+\title{Multi-Agent Large Language Models in Strategic Asset Allocation\\\large Integrating Black--Litterman with Autonomous Market Analysis}
+\author{Lee Kai Kiat, Ivan}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+    This thesis evaluates whether large language models (LLMs), orchestrated as a multi-agent research workflow, can improve strategic asset allocation when their outputs are mathematically ``leashed'' by Bayesian shrinkage.
+    Starting from the open-source \emph{TradingAgents} framework (originally designed for single-stock decisions), we adapt it to produce cross-asset return views and confidence scores for a diversified 60/40 portfolio proxy.
+    We map these textual outputs into a Black--Litterman (BL) model to generate posterior expected returns and portfolio weights under realistic constraints.
+
+    Across a five-year backtest (2019-09-30 to 2024-12-31) over 14 global instruments proxying the Endowus Flagship 60/40 portfolio, we find that LLM-generated views do not produce positive factor alpha over the full sample.
+    However, under monthly rebalancing with banded constraints, the best-performing LLM variation achieves improved risk-adjusted performance relative to a static 60/40 benchmark and demonstrates statistically significant downside protection under a Henriksson--Merton market-timing test.
+    We further show that raw LLM ``forecast skill'' is indistinguishable from noise (Rank IC near zero), and that self-reported confidence is uncalibrated with realized accuracy, motivating the central role of BL shrinkage and guardrails.
+\end{abstract}
+
+\tableofcontents
+\listoffigures
+\listoftables
+
+\chapter{Introduction}
+\section{Motivation}
+Generative AI is rapidly being integrated into financial workflows, evolving from narrow natural language processing (NLP) tasks (e.g., sentiment classification) to autonomous, tool-using agentic systems that can reason over heterogeneous information sources.
+In portfolio management, these systems are appealing because strategic asset allocation is intrinsically multi-modal: macroeconomic indicators, market prices, policy events, and narrative risk all influence expected returns and risk.
+
+\section{Research Gap}
+Existing multi-agent LLM trading research typically emphasizes single-ticker, high-frequency decision making (buy/sell/hold) rather than institutional-grade multi-asset portfolio construction.
+This creates a gap: even if LLMs can produce plausible narratives, portfolio construction requires the translation of those narratives into consistent expected return inputs and explicit uncertainty, then into weights under constraints.
+
+\section{Research Questions}
+This thesis studies the following questions:
+\begin{enumerate}
+    \item (RQ1) How do different data modalities (fundamentals vs.~news vs.~technicals) affect an LLM's financial reasoning when used to generate BL views?
+    \item (RQ2) Can LLM-driven portfolios generate persistent, statistically significant alpha, or are advantages regime-dependent?
+    \item (RQ3) How do market frictions (transaction costs / turnover) impact agentic allocation, and does temporal throttling (weekly vs.~monthly) act as a necessary guardrail?
+    \item (RQ4) Can an LLM calibrate its own uncertainty (confidence) in a way that is useful for constructing the BL confidence matrix $\Omega$?
+\end{enumerate}
+
+\section{Contributions}
+The main contributions are:
+\begin{itemize}
+    \item A multi-agent ablation framework that isolates the effect of information channels on BL view generation.
+    \item A practical mapping from LLM textual outputs (target returns, confidence scores) into BL inputs $(Q,\Omega)$ and constrained optimization.
+    \item A quantitative evaluation suite emphasizing statistical validity: factor alpha (CAPM/FF3/FF5), Henriksson--Merton timing, CVaR bootstrap tests, Rank IC, regime conditioning, and multi-level attribution.
+    \item Empirical evidence that (i) Bayesian shrinkage and banding are necessary for stability, (ii) raw LLM forecasting skill is approximately random, and (iii) the strongest measurable advantage is downside risk mitigation.
+\end{itemize}
+
+\chapter{Literature Review}
+\section{Modern Portfolio Theory and Black--Litterman}
+Modern Portfolio Theory (MPT), introduced by Markowitz, formalized the risk-return trade-off but proved highly sensitive to estimation error in expected returns, often maximizing error rather than true utility.
+The Black--Litterman (BL) framework \cite{blacklitterman} addresses this by combining an equilibrium ``market prior'' with subjective views via Bayesian updating, shrinking noisy views toward a stable prior.
+A critical component of BL is the calibration of the confidence matrix $\Omega$. Idzorek (2005) \cite{idzorek} introduced a prominent method for mapping user-supplied confidence scores (0--100\%) into the $\Omega$ matrix, bridging the gap between qualitative human intuition and rigorous variance estimation. This thesis adapts Idzorek's intuition by substituting human confidence with LLM-generated self-confidence scores. Here, BL serves as the explicit mathematical ``leash'' that prevents unstable weight allocations when LLM textual views inevitably exhibit statistical noise.
+
+\section{Machine Learning and NLP in Finance}
+Financial NLP has progressed rapidly from bag-of-words counting and supervised sentiment scoring to large foundational models capable of structured reasoning.
+Early breakthroughs established that extracting sentiment from news can yield alpha. Recently, Lopez-Lira and Tang (2023) \cite{lopezlira} demonstrated that large language models like ChatGPT can accurately forecast short-term stock price movements based on financial headlines, outperforming traditional sentiment models.
+However, raw predictive success in single assets is not guaranteed to scale into multi-asset portfolios, as LLMs may generate plausible but statistically ungrounded forecasts (hallucinations). This underscores the necessity for explicit uncertainty modeling when transitioning from single-asset returns to strategic portfolio construction.
+
+\section{Multi-Agent Orchestration}
+Recent advancements have shifted the focus from single-prompt sentiment to autonomous, tool-using agentic systems. Works like \emph{Wall Street Local} by Xie et al.\ (2023) \cite{xie2023} and the \emph{TradingAgents} framework \cite{tradingagents} decompose complex financial analysis into specialized roles (e.g., fundamentals analyst, news analyst, technical analyst) communicating via structured debate.
+While TradingAgents established that multi-agent debate can successfully execute high-frequency, single-stock trading decisions, a significant research gap remains. Explicitly, while Lopez-Lira showed LLMs can predict short-term equity returns and TradingAgents showed they can interact as a cohesive firm, no literature has yet bridged agentic LLMs with Bayesian portfolio optimizers like Black-Litterman for multi-asset strategic allocation under institutional constraints.
+
+\section{Frictions in Active Management}
+Turnover and transaction costs can entirely dominate theoretical paper alpha, particularly in quantitative strategies with high informational decay.
+In agentic settings, the illusion of constant information flow can drive continuous portfolio churn, amplifying execution drag. Thus, temporal frequency bounds (e.g., rebalancing schedules) and banded constraints are primary structural defenses required in algorithmic implementation.
+
+\chapter{Methodology and System Architecture}
+\section{Investment Universe and Benchmark}
+We proxy the Endowus Flagship 60/40 portfolio using 14 publicly traded instruments with fixed target weights.
+Let $\mathcal{U}$ denote the universe and $w^{(b)}$ the benchmark weights.
+The baseline benchmark in the backtests is a static 60/40 portfolio (``Endowus-60/40'') with periodic rebalancing.
+
+\begin{table}[H]
+    \centering
+    \caption{Proxy universe and target weights (Endowus Flagship 60/40 proxy)}
+    \label{tab:universe-weights}
+    \small
+    \begin{tabular}{llr}
+        \toprule
+        Ticker                           & Description (proxy label in code)              & Target weight \\
+        \midrule
+        0P0001AF7U.SI                    & Dimensional Global Core Equity Fund            & 0.195         \\
+        0P0000KYEE.SI                    & PIMCO GIS Global Bond Fund (SGD-hedged)        & 0.100         \\
+        SPY                              & S\&P 500 equity proxy                          & 0.090         \\
+        \texttt{\string^990100-USD-STRD} & Developed world equity proxy                   & 0.090         \\
+        DE000SLA4YD9.SG                  & Amundi Prime USA Fund                          & 0.084         \\
+        AGGG.L                           & Global aggregate bond proxy (SGD-hedged)       & 0.080         \\
+        IE0002461055.IR                  & PIMCO GIS Income Fund (SGD-hedged)             & 0.070         \\
+        0P0001AF7Z.SI                    & Dimensional EM equity core                     & 0.060         \\
+        0P0001EQUE.SI                    & Dimensional global core fixed income           & 0.050         \\
+        0P0001EF2T.SI                    & Dimensional Pacific Basin small cap equity     & 0.048         \\
+        0P0001CC3M                       & Global aggregate 1--5Y bond proxy (SGD-hedged) & 0.040         \\
+        PEBIX                            & Emerging market government bond proxy          & 0.040         \\
+        EIMI.L                           & MSCI Emerging Markets equity proxy             & 0.033         \\
+        0P0001DWI0.SI                    & PIMCO GIS EM bond (SGD-hedged)                 & 0.020         \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Multi-Agent Ablation Framework}
+We define four LLM variations to isolate the value of information channels:
+\begin{itemize}
+    \item \textbf{Variation A (Macro/Fundamentals + Price):} fundamentals and market data.
+    \item \textbf{Variation B (News):} news-driven views.
+    \item \textbf{Variation C (Technicals):} market/technicals only.
+    \item \textbf{Variation D (Full debate):} market + news + fundamentals + social signals.
+\end{itemize}
+Each variation is executed over the same universe and backtest window, generating a per-asset 30-day target return view and an associated confidence score.
+
+\section{Structured Signal Extraction and Agent Graph}
+The multi-agent system operates through a specialized pipeline: Analyst $\rightarrow$ Debater $\rightarrow$ Portfolio Manager. The Analyst dynamically calls tools to gather distinct data slices (e.g., pulling fundamentals or scraping recent news). Instead of relying on redundant indicators, the LLM was explicitly instructed to utilize distinct evidence profiles before passing findings to the Debater node, where conflicting arguments (e.g., strong earnings vs. poor price momentum) are synthesized. Finally, the Portfolio Manager node translates this debate into numerical outputs.
+The system constrains this final output into a JSON structure containing two fields:
+\begin{align}
+    \texttt{Target\_Return\_30d} & \in \mathbb{R},     \\
+    \texttt{Confidence\_Score}   & \in \{1,\dots,10\}.
+\end{align}
+If strict parsing fails, a lightweight extraction LLM is used to coerce valid JSON.
+
+\section{Black--Litterman Integration Framework}
+For a given rebalancing date, the system transforms the agent's textual views into the formal parameters of the Black--Litterman model. Let $N$ be the number of assets. The core inputs are:
+\begin{itemize}
+    \item $\mathbf{S} \in \mathbb{R}^{N \times N}$, the asset covariance matrix estimated from historical returns.
+    \item $\mathbf{\pi} = \delta \mathbf{S} \mathbf{w}^{(b)}$, the implied market equilibrium excess returns, where $\delta$ is the risk aversion parameter.
+    \item $\mathbf{P} = \mathbf{I}_{N}$, the view link matrix, where $\mathbf{I}_N$ is the $N \times N$ identity matrix, as our agent provides absolute views on each asset.
+    \item $\mathbf{Q} \in \mathbb{R}^{N}$, the vector of agent-generated \texttt{Target\_Return\_30d} views.
+    \item $\mathbf{\Omega} \in \mathbb{R}^{N \times N}$, a diagonal matrix representing the variance (uncertainty) of the views.
+\end{itemize}
+
+Drawing inspiration from Idzorek's confidence mapping, we scale uncertainty inversely with the LLM's self-reported confidence. Specifically, $\mathbf{\Omega}$ is defined such that:
+\begin{equation}
+    \mathbf{\Omega}_{i,i} = \frac{1}{\tau} \cdot \mathbf{S}_{i,i} \cdot f(\texttt{Confidence}_i)
+\end{equation}
+where $\tau$ is a scalar indicating the overall weight of the prior, and $f(\cdot)$ is a monotonically decreasing penalty function for lower confidence scores.
+The BL posterior expected returns $E[\mathbf{R}]$ and posterior covariance $\mathbf{\Sigma}_p$ are computed via:
+\begin{align}
+    E[\mathbf{R}]     & = \left[ (\tau \mathbf{S})^{-1} + \mathbf{P}^T \mathbf{\Omega}^{-1} \mathbf{P} \right]^{-1} \left[ (\tau \mathbf{S})^{-1}\mathbf{\pi} + \mathbf{P}^T \mathbf{\Omega}^{-1} \mathbf{Q} \right] \\
+    \mathbf{\Sigma}_p & = \mathbf{S} + \left[ (\tau \mathbf{S})^{-1} + \mathbf{P}^T \mathbf{\Omega}^{-1} \mathbf{P} \right]^{-1}
+\end{align}
+
+\section{Portfolio Constraints and Optimization}
+Using the posterior estimates, the portfolio optimizer solves a standard mean-variance utility maximization problem, given by:
+\begin{equation}
+    \max_{\mathbf{w}} \left( \mathbf{w}^T E[\mathbf{R}] - \frac{\lambda}{2} \mathbf{w}^T \mathbf{\Sigma}_p \mathbf{w} \right)
+\end{equation}
+subject to:
+\begin{align}
+    \sum_i w_i       & = 1                                   \\
+    \mathbf{w}_{min} & \leq \mathbf{w} \leq \mathbf{w}_{max}
+\end{align}
+We evaluate both weekly and monthly rebalancing schedules. We also enforce ``banded'' variants ($w_{min}$ and $w_{max}$ structured closely around the 60/40 benchmark weights) which restrict the magnitude of theoretical allocation swings, inherently limiting turnover.
+Transaction costs are applied as a proportional drag on traded notional. The transaction cost penalty applied to the portfolio return at time $t$ is defined as:
+\begin{equation}
+    \text{Penalty}_t = c \sum_{i=1}^{N} |w_{t,i} - w_{t-1,i}|
+\end{equation}
+where $c$ is the proportional transaction cost rate. Sensitivity is evaluated at 0, 5, 10, and 20 bps in our frictions analysis.
+
+\section{Evaluation and Statistical Tests}
+We report standard risk and performance metrics (annualized return, Sharpe, max drawdown, Calmar), plus:
+\begin{itemize}
+    \item CAPM / Fama--French 3-factor / Fama--French 5-factor annualized alpha.
+    \item Henriksson--Merton downside timing coefficient $\beta_2$ and significance.
+    \item 95\% CVaR bootstrap comparison vs benchmark.
+    \item Rank IC (Spearman rank correlation) between predicted cross-sectional returns and realized forward returns.
+    \item Regime conditioning using VIX (``high volatility'' defined as VIX $> 22$).
+    \item Brinson--Fachler attribution and sub-asset selection attribution.
+\end{itemize}
+
+\chapter{Results: Quantitative Evidence}
+\section{Full-Period Performance}
+Table~\ref{tab:full-period} reports full-period performance and factor alphas.
+The best-performing LLM configuration is \textbf{LLM-BL-A-Monthly-Banded}, which achieves an annualized Sharpe of 0.514 and an annualized return of 7.79\%.
+All strategies, including the benchmark, exhibit negative factor alpha in this sample.
+
+\begin{table}[H]
+    \centering
+    \caption{Full-period performance summary (2019-09-30 to 2024-12-31)}
+    \label{tab:full-period}
+    \small
+    \begin{tabular}{lrrrrrrr}
+        \toprule
+        Strategy                         & Ann. Ret (\%) & Sharpe         & Max DD (\%)     & Calmar         & CAPM $\alpha$ (\%) & FF3 $\alpha$ (\%) & FF5 $\alpha$ (\%) \\
+        \midrule
+        Endowus-60/40                    & 7.16          & 0.451          & -21.53          & 0.333          & -2.65              & -2.56             & -2.85             \\
+        Systematic-BL-Tactical-Monthly   & 7.98          & 0.454          & -22.06          & 0.362          & -4.62              & -4.56             & -4.88             \\
+        LLM-BL-A-Monthly                 & 7.14          & 0.439          & -20.10          & 0.355          & -3.21              & -3.08             & -4.41             \\
+        \textbf{LLM-BL-A-Monthly-Banded} & \textbf{7.79} & \textbf{0.514} & \textbf{-19.76} & \textbf{0.394} & \textbf{-1.84}     & \textbf{-1.73}    & \textbf{-3.09}    \\
+        LLM-BL-D-Monthly-Banded          & 3.42          & 0.150          & -22.96          & 0.149          & -6.42              & -6.30             & -7.60             \\
+        Endowus\_Actual\_60/40           & 6.72          & 0.455          & -17.40          & 0.386          & -2.76              & -2.66             & -3.06             \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Downside Protection and Market Timing (Henriksson--Merton)}
+We estimate:
+\begin{equation}
+    R_p - R_f = \alpha + \beta_1(R_m - R_f) + \beta_2\max(0, R_f - R_m) + \epsilon.
+\end{equation}
+The strongest evidence of downside protection is found in \textbf{LLM-BL-A-Monthly-Banded}, which achieves $\beta_2 = 0.382$ with $p=0.0036$.
+
+\begin{table}[H]
+    \centering
+    \caption{Henriksson--Merton downside timing test (selected portfolios)}
+    \label{tab:hm}
+    \begin{tabular}{lrr}
+        \toprule
+        Portfolio               & $\beta_2$ & $p$-value \\
+        \midrule
+        LLM-BL-A-Monthly-Banded & 0.382     & 0.0036    \\
+        LLM-BL-A-Monthly        & 0.292     & 0.1042    \\
+        LLM-BL-A                & 0.037     & 0.8436    \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Tail Risk Reduction (CVaR Bootstrap)}
+We compare 95\% CVaR (expected shortfall) via 10{,}000 paired bootstrap resamples.
+For \textbf{LLM-BL-A-Monthly-Banded}, CVaR is slightly improved relative to benchmark and the probability of better tail outcomes is 73.5\%.
+
+\begin{table}[H]
+    \centering
+    \caption{95\% CVaR bootstrap comparison vs benchmark (selected portfolios)}
+    \label{tab:cvar}
+    \begin{tabular}{lrrr}
+        \toprule
+        Portfolio               & CVaR(P) & CVaR(B) & Prob(P $>$ B) \\
+        \midrule
+        LLM-BL-A-Monthly-Banded & -6.36\% & -6.39\% & 73.5\%        \\
+        LLM-BL-A-Banded         & -5.95\% & -6.39\% & 82.9\%        \\
+        LLM-BL-A                & -6.75\% & -6.39\% & 26.9\%        \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Sub-Sleeve Alpha (Equity vs Fixed Income)}
+When isolating selection within asset-class buckets, Variation B (News) shows statistically significant fixed-income sleeve active returns, highlighting the structural dichotomy in agent performance across asset classes.
+For example, \textbf{LLM-BL-A-Monthly-Banded} exhibited a cumulative active return where fixed income contributed +1.01\% outperformance while the equity sleeve dragged the portfolio down by -3.67\%.
+
+\begin{table}[H]
+    \centering
+    \caption{Sleeve-level selection tests and Brinson Attribution breakdown}
+    \label{tab:sleeve}
+    \small
+    \begin{tabular}{lrrrrrr}
+        \toprule
+        Portfolio               & EQ AR mean & EQ $p$ & FI AR mean & FI $t$ & FI $p$ \\
+        \midrule
+        LLM-BL-A-Monthly-Banded & -0.097\%   & 0.1273 & +0.040\%   & 1.099  & 0.2720 \\
+        LLM-BL-B                & -0.125\%   & 0.1044 & +0.092\%   & 2.604  & 0.0092 \\
+        LLM-BL-B-Monthly        & -0.146\%   & 0.0521 & +0.087\%   & 2.562  & 0.0104 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{table}[H]
+    \centering
+    \caption{Detailed Brinson Sub-Asset Attribution for LLM-BL-A-Monthly-Banded (Cumulative Selection Return)}
+    \label{tab:brinson_details}
+    \small
+    \begin{tabular}{llr}
+        \toprule
+        Sleeve                                           & Ticker                           & Cumulative Selection Value \\
+        \midrule
+        \multirow{4}{*}{\textbf{Equity (-3.67\%)}}       & SPY                              & -0.60\%                    \\
+                                                         & \texttt{\string^990100-USD-STRD} & -1.25\%                    \\
+                                                         & 0P0001AF7U.SI                    & -0.80\%                    \\
+                                                         & DE000SLA4YD9.SG                  & -0.45\%                    \\
+        \midrule
+        \multirow{3}{*}{\textbf{Fixed Income (+1.01\%)}} & 0P0000KYEE.SI                    & +0.40\%                    \\
+                                                         & 0P0001CC3M                       & +0.32\%                    \\
+                                                         & AGGG.L                           & +0.29\%                    \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Event Studies (Cumulative Abnormal Returns)}
+We evaluate six macroeconomic shock windows and compute cumulative abnormal returns (CAR) relative to the 60/40 benchmark.
+The summary statistics across all crisis epochs are reported in Table~\ref{tab:car_summary}.
+Figure~\ref{fig:event-covid} shows one representative event plot; the full set of event study figures is provided in Appendix~\ref{app:event}.
+
+\begin{table}[H]
+    \centering
+    \caption{Event-Study Cumulative Abnormal Return (CAR) across 6 crisis epochs}
+    \label{tab:car_summary}
+    \small
+    \begin{tabular}{lrr}
+        \toprule
+        Portfolio               & Crisis Mean CAR & $p$-value (1-tailed) \\
+        \midrule
+        LLM-BL-A-Monthly-Banded & +0.66\%         & 0.2860               \\
+        LLM-BL-B-Monthly-Banded & -1.11\%         & 0.9245               \\
+        LLM-BL-C-Monthly-Banded & +0.30\%         & 0.3254               \\
+        LLM-BL-D-Monthly-Banded & -1.27\%         & 0.8930               \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{\detokenize{covid_19_crash_&_rebound.png}}
+    \caption{Event study: COVID-19 crash \& rebound (equity curve window comparison)}
+    \label{fig:event-covid}
+\end{figure}
+
+\chapter{Discussion: Behavioral Mechanics of LLMs}
+
+This chapter synthesizes empirical findings, interpreting the behavioral artifacts that emerge when an LLM is assigned the task of numerical asset allocation. The central hypothesis is that LLMs operate purely as semantic processors that map linguistic descriptions of market regimes onto quantitative outputs. While this generates intuitive macro narratives, it fundamentally misaligns with the statistical, non-stationary realities of financial markets.
+
+\section{The Friction Bleed and Myopic Decision Making}
+A core result of the simulations is that high-frequency (weekly) rebalancing is deeply brittle under realistic execution drag.
+As demonstrated in the frictions analysis, the weekly LLM strategy declines from 3.75\% annualized return (0 bps) to 1.57\% (20 bps), a 58\% reduction.
+In contrast, the monthly strategy declines from 7.02\% to 6.50\% (20 bps), showing merely a 7\% reduction.
+
+\textbf{Hypothesis \& Evaluation:} This severe ``friction bleed'' suggests that LLMs suffer from temporal myopia. An LLM agent evaluates each discrete data window from scratch, lacking an intrinsic constraint to minimize turnover relative to its previous state. Without memory or explicit penalty functions in its prompt instructing it to hold views steady unless new information is highly material, the agent treats every weekly news cycle as an inflection point. It issues rapid directional swings that are mathematically devastating once real-world friction applies. Consequently, temporal throttling (monthly execution) acts as a structural defense mechanism that naturally filters out high-frequency noise that the LLM is unequipped to ignore.
+
+\begin{table}[H]
+    \centering
+    \caption{Transaction cost sensitivity (annualized returns)}
+    \label{tab:frictions}
+    \begin{tabular}{lrr}
+        \toprule
+        Cost   & Weekly Ann. Ret & Monthly Ann. Ret \\
+        \midrule
+        0 bps  & 3.75\%          & 7.02\%           \\
+        5 bps  & 3.20\%          & 6.89\%           \\
+        10 bps & 2.66\%          & 6.76\%           \\
+        20 bps & 1.57\%          & 6.50\%           \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{The ``Chaos Engine'' and Crisis Alpha}
+We condition performance on volatility regimes using VIX $> 22$ as ``high volatility.''
+The hit rate of LLM-BL-A-Monthly-Banded increases from 45.0\% in normal regimes to 56.5\% in high-volatility regimes (Table~\ref{tab:regime}).
+While the active return mean in high-volatility months is positive, it lacks statistical significance, pointing toward improved but highly variable characteristics.
+
+\textbf{Hypothesis \& Evaluation:} The fact that LLM agents improve in high volatility regimes---yielding downside protection and positive ``Crisis Alpha'' elements via Henriksson-Merton metrics---exposes their dependency on unambiguous classification. Financial information in normal markets is structurally conflicting and noisy (e.g., mixed earnings, subtle Fed shifts), leaving the LLM to hallucinate conviction. During market panics, however, textual feature spaces (news headlines, macro sentiment) converge into overwhelmingly negative narratives. The LLM, which functions mechanically as a semantic classifier, excels when linguistic inputs point unidirectionally toward defensive action. Therefore, LLMs naturally behave as long-volatility protective assets that identify structural breakdowns faster than single-asset momentum, yet struggle to generate alpha during quiet drift upward.
+
+\begin{table}[H]
+    \centering
+    \caption{Regime-conditioned results for LLM-BL-A-Monthly-Banded}
+    \label{tab:regime}
+    \begin{tabular}{lrrrrr}
+        \toprule
+        Regime                & N  & Hit rate & Mean AR & Binom $p$ & NW $p$ \\
+        \midrule
+        High vol (VIX $>$ 22) & 23 & 56.5\%   & 0.25\%  & 0.3388    & 0.3498 \\
+        Normal (VIX $\le$ 22) & 40 & 45.0\%   & -0.02\% & 0.7852    & 0.9212 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{The Illusion of Forecasting and Semantic Market Efficiency}
+Our findings show that raw LLM return forecasts exhibit near-zero cross-sectional predictive power.
+Rank IC results (Table~\ref{tab:rankic}) are statistically indistinguishable from zero across all variations, with $p$-values exceeding standard significance thresholds.
+
+\textbf{Hypothesis \& Evaluation:} The systematic failure to generate Rank IC suggests a fundamental limit: LLMs are trained to predict the next token mathematically derived from a vast corpus of human text language, inherently making them engines of consensus.
+When summarizing available news, price data, and fundamentals, the LLM outputs the ``most probable'' narrative. Yet, due to semantic market efficiency, by the time a narrative is coherent enough to feature prominently in text (and thereby recognizable to an LLM), it has already been perfectly priced into the underlying asset. Consequently, the ``alpha'' of narrative prediction is zero.
+Their numerical point-forecasts act more like descriptive labels than genuine market-implied predictions. This finding empirically justifies the absolute necessity of Black--Litterman shrinkage: by treating LLM predictions as weak, noisy views instead of pure truth, the portfolio is mathematically prevented from over-exploiting random noise.
+
+\begin{table}[H]
+    \centering
+    \caption{Cross-sectional Rank IC (30-day view vs next-month realized return)}
+    \label{tab:rankic}
+    \begin{tabular}{lrrrr}
+        \toprule
+        Model    & Mean Rank IC & Hit rate (IC$>$0) & $t$-stat & $p$-value \\
+        \midrule
+        LLM-BL-A & 0.003        & 51.6\%            & 0.08     & 0.9383    \\
+        LLM-BL-B & 0.041        & 59.4\%            & 1.27     & 0.2076    \\
+        LLM-BL-C & 0.021        & 46.9\%            & 0.61     & 0.5423    \\
+        LLM-BL-D & -0.006       & 53.1\%            & -0.15    & 0.8837    \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\section{Sub-Asset Attribution and Structural Cautiousness}
+For the best-performing LLM strategy (LLM-BL-A-Monthly-Banded), sub-asset selection attribution reveals a persistent equity selection drag (total -3.67\%) and a positive fixed income selection contribution (+1.01\%).
+The model implicitly maintained a ``value'' or ``caution'' bias in equity allocation during a period utterly dominated by a US mega-cap technology rally, while simultaneously demonstrating robust relative positioning within fixed-income sleeves through a brutal rising-rate regime.
+
+\textbf{Hypothesis \& Evaluation:} This dichotomy highlights a behavioral ``caution bias'' inherited from RLHF (Reinforcement Learning from Human Feedback) training present in models like GLM-4. AI models are trained heavily to provide balanced, hedged caveats rather than expressing maximalist conviction in extreme valuation expansions. During 2023--2024, US tech valuations stretched continuously into historical percentiles; human financial commentators published numerous cautionary tales. The LLM, reflecting this textual caution, structurally underweighted the momentum wave. Conversely, in the comparatively more bounded, mathematically disciplined universe of fixed income, where yield and duration risks are more strictly defined, the model proved capable of intelligently navigating term premiums and credit spreads when processing fundamental rate data.
+
+To illustrate, consider this characteristic response generated by the portfolio manager agent regarding US equities heavily dominated by tech in late 2023:
+\begin{quote}
+    \textit{``Despite the robust recent momentum driven by AI fundamentals, macroeconomic headwinds persist in the form of higher-for-longer interest rates and stretched historical valuations in the SPY constituents. Caution is warranted. The expected 30-day return is moderated down to +0.2\% to reflect asymmetric downside vulnerability...''}
+\end{quote}
+This text intrinsically translates into a systemic underweight relative to the benchmark prior, penalizing the strategy mathematically while adhering faithfully to a "value-conservative" philosophical orientation.
+
+\section{The Semantic Trap and Exogenous Shocks}
+Event studies show that the LLM's portfolio advantages become primarily visible during abrupt exogenous shocks like the Ukraine invasion or unexpected inflation prints.
+However, during the regional banking crisis window (a proxy for the Silicon Valley Bank era event cluster), the agent significantly underperformed against the benchmark.
+
+\textbf{Hypothesis \& Evaluation:} This highlights the ``Semantic Trap'' intrinsic to LLMs. For macro-political shocks (COVID, Ukraine), the textual descriptors closely map entirely onto the anticipated asset price movement: global uncertainty spikes, so bonds go up, equities crash. The LLM accurately correlates negative language to risk-off positioning.
+However, in structural or plumbing crises---such as the SVB failure---headline sentiment reaches extreme systemic panic, prompting the LLM to aggressively de-risk. Contemporaneously, central banks deploy underlying liquidity facilities (e.g., BTFP) which inject tremendous liquidity, instantly sparking an equity surge that contrasts with the linguistic panic in the news. The LLM fails because its reasoning operates strictly on surface-level sentiment rather than abstracting the second-order structural impacts of central bank plumbing facilities that are not immediately summarized into plain sentiment heuristics.
+
+An examination of the agent's textual output during the SVB crisis (March 2023) lays bare this exact failure mode. The agent's debate synthesis concluded:
+\begin{quote}
+    \textit{``The sudden failure of Silicon Valley Bank has introduced intense systemic contagion fears across the regional banking sector. Sentiment indices have cratered, and news analysts strongly advocate for a flight-to-safety posture. Financials and general equity exposure must be dramatically reduced to avoid compounding losses. We anticipate a -4.5\% shock to core equities.''}
+\end{quote}
+Here, the LLM panicked over the highly salient ``systemic contagion'' headlines. The Bank Term Funding Program (BTFP), though mentioned in underlying fundamentals, was not weighted as a massive structural pivot. The LLM dumped equities precisely as the Fed effectively restarted quantitative easing, cementing a severe underperformance against a static benchmark.
+
+\section{Epistemic Uncertainty and The Calibration Problem}
+LLM self-reported confidence completely uncorrelates with subsequent realized active returns.
+Across all models and variations, the overall Pearson correlation between self-reported confidence and next-month active return is $r=0.010$ with $p=0.760$.
+Thus, trying to dynamically map the $\Omega$ BL uncertainty matrix entirely from internal LLM scores fails to align with mathematical reality without hard boundaries.
+
+\textbf{Hypothesis \& Evaluation:} LLMs inherently lack epistemic uncertainty algorithms; they do not ``know what they do not know.''
+When an LLM assigns a discrete number (e.g., $8/10$) to represent ``confidence,'' this score does not reflect genuine Bayesian probability of a future event occurring. Instead, it measures linguistic density: how prevalent, dominant, and non-contradictory the topic is within its training and prompt data. If the model finds 50 articles saying identical things about a stock, it claims 9/10 confidence simply because the context window is homogeneous. But in capital markets, homogeneity equals consensus, and consensus is priced in. This explains why the most ``confident'' LLM trades often correspond to overcrowded trades with asymmetric downside risk. External calibration algorithms are unconditionally required to translate semantic density into variance bounds.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{confidence_scatter.png}
+    \caption{LLM confidence vs next-month realized active return (all models/variations)}
+    \label{fig:confidence}
+\end{figure}
+
+\section{Information Overload and Cross-Modal Conflict}
+Our ablation studies definitively showed that the full-debate multi-agent variation (D), which ingested all available data streams (fundamentals, news, technicals), strongly underperformed compared to narrower variations.
+A stark representative example is the sharp drawdowns of LLM-BL-D-Monthly-Banded (Sharpe 0.150) against the leaner LLM-BL-A-Monthly-Banded configuration (Sharpe 0.514).
+
+\textbf{Hypothesis \& Evaluation:} More information fundamentally degrades LLM decision-making due to the mechanics of transformer-based cross-modal synthesis. When an LLM operates a multi-agent debate, the system is designed to generate natural language arguments representing different lenses. When Technicals suggest a bearish breakdown while Fundamentals report solid cash flow, the orchestrating LLM attempts to resolve the debate through textual compromise rather than rigorous mathematical weighting. To prevent logical discord, the synthesis agent often defaults to arbitrary averages or gravitates toward the agent exhibiting the most rhetorically persuasive (but factually extraneous) language. Consequently, the signal-to-noise ratio plummets under complex, conflicting contexts. Feeding strictly quantified fundamental metrics (A) serves as a better grounding mechanism than bombarding the model with contradictory news and momentum noise.
+
+\chapter{Limitations and Future Work}
+\section{Limitations}
+Key limitations include:
+\begin{itemize}
+    \item \textbf{Single foundation model dependency:} experiments use GLM-4-32B via OpenRouter, so conclusions may not tightly generalize across model families (e.g., direct OpenAI or Anthropic models might exhibit different semantic biases).
+    \item \textbf{Small-$N$ regime/event analysis:} Crisis windows are limited in count by definition, meaning our event studies are highly indicative but not statistically definitive across universally generated shocks.
+    \item \textbf{Survivorship and Substitution Bias (ETF Proxy Mappings):} To simulate the Endowus Flagship 60/40 portfolio backward through a full five-year period, we frequently mapped newer, institutional-grade unit trusts to older, highly correlated market proxies (e.g., SPY for US Equity, AGGG.L for Global Aggregate Bonds). This introduces a mild tracking error compared to actual Endowus institutional execution. Furthermore, testing historically available instruments introduces a degree of survivorship bias that is standard but non-negligible in continuous-time simulations.
+    \item \textbf{Single Macro Regime Backtest:} The primary evaluation window (2019--2024) included extreme secular trends, chiefly the catastrophic 2022 aggregate bond bear market and the subsequent generative AI equity boom. Factor alphas were broadly negative across all benchmarks during this window, meaning we evaluated relative downside outperformance more robustly than absolute peak alpha generation.
+\end{itemize}
+
+\section{Future Work}
+Promising extensions include:
+\begin{itemize}
+    \item Adaptive rebalancing triggered by volatility spikes rather than calendar schedules.
+    \item External calibration of confidence to map to $\Omega$ (e.g., via rolling forecast error).
+    \item Multi-modal inputs such as chart image parsing and macro surprise indices.
+    \item Expansion to alternative asset classes and out-of-sample validation.
+\end{itemize}
+
+\chapter{Conclusion}
+LLMs are not autonomous ``super-investors'' that generate persistent alpha in strategic asset allocation.
+In this work, raw return forecasts are effectively random and model confidence is uncalibrated.
+Nevertheless, when constrained by BL shrinkage and guardrails (monthly frequency, banded weights), LLM-driven systems can act as risk-mitigation copilots that demonstrate measurable downside protection and improved tail-risk characteristics.
+
+\appendix
+\chapter{Additional Figures and Tables}
+\label{app:event}
+
+\section{Systematic BL comparison plots}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{endowus_systematic_comparison_plot.png}
+    \caption{Full-period equity curve comparison across benchmarks and BL variants}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{rolling_beta.png}
+    \caption{Rolling 6-month CAPM beta for LLM-BL-A-Monthly-Banded (vs benchmark)}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{equity_allocation.png}
+    \caption{Equity allocation path for LLM-BL-A-Monthly-Banded}
+\end{figure}
+
+\section{Event study plots}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{the_emerging_market_divergence.png}
+    \caption{Event study: Emerging market divergence}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{the_inflation_print_shock.png}
+    \caption{Event study: Inflation print shock}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{russia_ukraine_invasion.png}
+    \caption{Event study: Russia--Ukraine invasion}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{the_boj_yield_curve_surprise.png}
+    \caption{Event study: BOJ yield curve surprise}
+\end{figure}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{regional_banking_crisis.png}
+    \caption{Event study: Regional banking crisis}
+\end{figure}
+
+\chapter{References}
+\begin{thebibliography}{9}
+    \bibitem{tradingagents}
+    Y.~Xiao, E.~Sun, D.~Luo, and W.~Wang.
+    \newblock TradingAgents: Multi-Agents LLM Financial Trading Framework.
+    \newblock \emph{arXiv preprint arXiv:2412.20138}, 2025.
+
+    \bibitem{blacklitterman}
+    F.~Black and R.~Litterman.
+    \newblock Global Portfolio Optimization.
+    \newblock \emph{Financial Analysts Journal}, 1992.
+
+    \bibitem{idzorek}
+    T.~M.~Idzorek.
+    \newblock A step-by-step guide to the Black-Litterman model: Incorporating user-specified confidence levels.
+    \newblock \emph{Forecasting expected returns in the financial markets}, 2005.
+
+    \bibitem{lopezlira}
+    A.~Lopez-Lira and Y.~Tang.
+    \newblock Can ChatGPT Forecast Stock Price Movements? Return Predictability and Large Language Models.
+    \newblock \emph{arXiv preprint arXiv:2304.07619}, 2023.
+
+    \bibitem{xie2023}
+    Q.~Xie, T.~Yu, and others.
+    \newblock Wall Street Local: A Multi-Agent Financial Framework.
+    \newblock \emph{arXiv}, 2023.
+
+    \bibitem{henrikssonmerton}
+    R.~Henriksson and R.~Merton.
+    \newblock On Market Timing and Investment Performance.
+    \newblock \emph{Journal of Business}, 1981.
+\end{thebibliography}
+
+\end{document}
