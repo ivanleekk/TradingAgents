@@ -313,8 +313,9 @@ def run_variation(
                         "timestamp": time.time()
                     }
                     
-                    with open("pending_batches.json", "w") as f:
+                    with open("pending_batches.json.tmp", "w") as f:
                         json.dump(pending, f, indent=4)
+                    os.replace("pending_batches.json.tmp", "pending_batches.json")
                         
                 except Exception as e:
                     print(f"[{variation_id}] FAILED to submit sub-batch {i+1}: {e}", flush=True)
@@ -430,8 +431,9 @@ def check_and_resume_batches(config: Dict):
                     del latest_pending[bid]
             still_pending = latest_pending
 
-    with open("pending_batches.json", "w") as f:
+    with open("pending_batches.json.tmp", "w") as f:
         json.dump(still_pending, f, indent=4)
+    os.replace("pending_batches.json.tmp", "pending_batches.json")
 
 
 def main():
