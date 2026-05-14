@@ -274,7 +274,7 @@ def run_variation(
 
         # Step B: Submit Batch in Chunks
         if bm.requests:
-            BATCH_CHUNK_SIZE = 100
+            BATCH_CHUNK_SIZE = 500
             print(f"[{variation_id}] Splitting {len(bm.requests)} requests into chunks of {BATCH_CHUNK_SIZE} for safety...", flush=True)
             
             # Split list into chunks
@@ -370,7 +370,7 @@ def run_variation(
     return "completed"
 
 
-def check_and_resume_batches(config: Dict):
+def check_and_resume_batches(config: Dict, target_variation_id: str = None):
     """Checks for pending batches and resumes them if completed."""
     if not os.path.exists("pending_batches.json"):
         return
@@ -388,6 +388,11 @@ def check_and_resume_batches(config: Dict):
     completed_any = False
     
     for batch_id, meta in list(pending.items()):
+        # ONLY process batches for the current variation to avoid race conditions
+        if target_variation_id and meta.get("variation_id") != target_variation_id:
+            still_pending[batch_id] = meta
+            continue
+
         try:
             status = bm.get_batch_status(batch_id)
             print(f"Checking Batch {batch_id} status: {status}")
@@ -461,7 +466,8 @@ def main():
     config["online_tools"] = True
     config["data_dir"] = "./data_dir"
 
-    check_and_resume_batches(config)
+    # Check status of previous batches for THIS variation only
+    check_and_resume_batches(config, target_variation_id=var_id)
 
     if len(sys.argv) > 1:
         # Run specific variation provided as argument
