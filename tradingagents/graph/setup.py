@@ -4,6 +4,8 @@ from typing import Dict, Any
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph, START
 from langgraph.prebuilt import ToolNode
+from tradingagents.utils.checkpointer import TradingGraphCheckpointer
+from langgraph.checkpoint.memory import MemorySaver
 
 from tradingagents.agents import *
 from tradingagents.agents.utils.agent_states import AgentState
@@ -207,4 +209,5 @@ class GraphSetup:
         # workflow.add_edge("Risk Judge", END)
 
         # Compile and return
-        return workflow.compile()
+        checkpointer = TradingGraphCheckpointer()
+        return workflow.compile(checkpointer=checkpointer)

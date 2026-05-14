@@ -662,8 +662,7 @@ def get_YFin_data_online(
 
     # Add header information
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
-    header += f"# Total records: {len(data)}\n"
-    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+    header += f"# Total records: {len(data)}\n\n"
 
     return header + csv_string
 

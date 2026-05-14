@@ -68,10 +68,18 @@ class TradingAgentsGraph:
         )
 
         # Initialize LLMs
-        if (
-            self.config["llm_provider"].lower() == "openai"
-            or self.config["llm_provider"] == "openrouter"
-        ):
+        if self.config["llm_provider"].lower() == "openai":
+            self.deep_thinking_llm = ChatOpenAI(
+                model=self.config["deep_think_llm"],
+                base_url=self.config["backend_url"],
+                api_key=os.getenv("OPENAI_API_KEY"),
+            )
+            self.quick_thinking_llm = ChatOpenAI(
+                model=self.config["quick_think_llm"],
+                base_url=self.config["backend_url"],
+                api_key=os.getenv("OPENAI_API_KEY"),
+            )
+        elif self.config["llm_provider"] == "openrouter":
             self.deep_thinking_llm = ChatOpenAI(
                 model=self.config["deep_think_llm"],
                 base_url=self.config["backend_url"],
@@ -170,6 +178,18 @@ class TradingAgentsGraph:
         self.selected_analysts = selected_analysts
         self.graph = self.graph_setup.setup_graph(self.selected_analysts)
 
+    def get_analyst_nodes(self):
+        """Returns the list of analyst node names in order."""
+        return [f"{a.capitalize()} Analyst" for a in self.selected_analysts]
+
+    def get_researcher_nodes(self):
+        """Returns the researcher node names."""
+        return ["Bull Researcher", "Bear Researcher"]
+
+    def get_manager_nodes(self):
+        """Returns the manager node names."""
+        return ["Research Manager", "Trader"]
+
     def _create_tool_nodes(self) -> Dict[str, ToolNode]:
         """Create tool nodes for different data sources."""
         # For ETFs and Macro trading, standard corporate balance sheets will return nothing.
@@ -230,22 +250,22 @@ class TradingAgentsGraph:
         init_agent_state = self.propagator.create_initial_state(
             company_name, trade_date
         )
+        return self._run_graph(init_agent_state, trade_date)
+
+    def _run_graph(self, state, trade_date):
         args = self.propagator.get_graph_args()
 
         if self.debug:
             # Debug mode with tracing
             trace = []
-            for chunk in self.graph.stream(init_agent_state, **args):
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
+            for chunk in self.graph.stream(state, **args):
+                if "messages" in chunk and len(chunk["messages"]) > 0:
                     chunk["messages"][-1].pretty_print()
-                    trace.append(chunk)
-
+                trace.append(chunk)
             final_state = trace[-1]
         else:
             # Standard mode without tracing
-            final_state = self.graph.invoke(init_agent_state, **args)
+            final_state = self.graph.invoke(state, **args)
 
         # Store current state for reflection
         self.curr_state = final_state
@@ -254,9 +274,18 @@ class TradingAgentsGraph:
         self._log_state(trade_date, final_state)
 
         # Return decision and processed signal
-        # Since we cut off the graph at the Trader node, we extract the JSON from the trader's output directly
         decision_raw = final_state.get("trader_investment_plan", "")
         return final_state, self.process_signal(decision_raw)
+
+    def run_until(self, state, node_name):
+        """Run the graph from the current state until the specified node is reached."""
+        args = self.propagator.get_graph_args()
+        config = args.get("config", {})
+        config["interrupt_before"] = [node_name]
+        
+        # We use stream and take the first chunk because it will stop at the interrupt
+        # Actually invoke with interrupt will just return the state before the node
+        return self.graph.invoke(state, config=config)
 
     def _log_state(self, trade_date, final_state):
         """Log the final state to a JSON file."""
