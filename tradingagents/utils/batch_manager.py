@@ -1,12 +1,14 @@
 import os
 import json
 import time
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, ClassVar
+import contextvars
 from openai import OpenAI
 from pathlib import Path
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage, AIMessage
 from langchain_core.outputs import ChatResult, ChatGeneration
+from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
 class BatchCaptureException(Exception):
@@ -24,6 +26,10 @@ class OpenAIBatchManager:
 
     def add_request(self, custom_id: str, model: str, messages: List[Dict[str, str]], **kwargs):
         """Add a request to the current batch."""
+        # Convert tools to OpenAI format if present
+        if "tools" in kwargs:
+            kwargs["tools"] = [convert_to_openai_tool(t) for t in kwargs["tools"]]
+            
         request = {
             "custom_id": custom_id,
             "method": "POST",
@@ -35,6 +41,12 @@ class OpenAIBatchManager:
             }
         }
         self.requests.append(request)
+        
+        # Incremental saving to disk
+        if hasattr(self, 'current_batch_file') and self.current_batch_file:
+            os.makedirs(os.path.dirname(self.current_batch_file), exist_ok=True)
+            with open(self.current_batch_file, "a") as f:
+                f.write(json.dumps(request) + "\n")
 
     def submit_batch(self, batch_file_path: str = "batches/batch_requests.jsonl") -> str:
         """Submit the collected requests as a batch job."""
@@ -102,9 +114,20 @@ class OpenAIBatchManager:
 class CaptureLLM(BaseChatModel):
     """Mock LLM that captures prompts for the Batch API."""
     
+    # Context variable to hold the custom ID for the current thread/task
+    # Use ClassVar so Pydantic doesn't try to deepcopy it
+    _context_custom_id: ClassVar[contextvars.ContextVar] = contextvars.ContextVar("current_custom_id", default="")
+    
     batch_manager: OpenAIBatchManager = Field(exclude=True)
     model: str = "gpt-5.4"
-    current_custom_id: str = ""
+    
+    @property
+    def current_custom_id(self) -> str:
+        return self._context_custom_id.get()
+    
+    @current_custom_id.setter
+    def current_custom_id(self, value: str):
+        self._context_custom_id.set(value)
     
     def _generate(
         self,
@@ -147,3 +170,7 @@ class CaptureLLM(BaseChatModel):
     @property
     def _llm_type(self) -> str:
         return "capture-llm"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+        """Bind tools to the model. Required for agents that use tools."""
+        return self.bind(tools=tools, **kwargs)

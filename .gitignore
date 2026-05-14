@@ -14,3 +14,6 @@ models
 runs
 reports
 data_dir
+batches/
+pending_batches.json
+test_checkpoints_*

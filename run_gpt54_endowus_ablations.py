@@ -129,7 +129,10 @@ def run_variation(
     out_dir = f"gpt54_endowus_{variation_id}"
 
     # 1. Identify which tasks are already done across all tickers to support resume
+    # We check BOTH decisions.csv AND the eval_results logs
     completed_tasks_set = set()  # Store (ticker, date) tuples
+    
+    # Check decisions.csv
     for ticker in ETFS:
         csv_file = os.path.join(out_dir, f"{ticker}_decisions.csv")
         if os.path.isfile(csv_file):
@@ -140,22 +143,24 @@ def run_variation(
                         completed_tasks_set.add((ticker, dt))
             except pd.errors.EmptyDataError:
                 pass
+                
+    # Check eval_results logs for partial runs
+    for ticker in tickers:
+        log_dir = Path(f"eval_results/{ticker}/Variation_{variation_id}_logs")
+        if log_dir.exists():
+            for log_file in log_dir.glob("full_states_log_*.json"):
+                # Extract date from filename full_states_log_YYYY-MM-DD.json
+                dt = log_file.stem.replace("full_states_log_", "")
+                completed_tasks_set.add((ticker, dt))
 
     # 1. Identify tasks
     if tasks is None:
         tasks = []
         for ticker in tickers:
-            csv_file = os.path.join(out_dir, f"{ticker}_decisions.csv")
-            existing_dates = set()
-            if os.path.isfile(csv_file):
-                with open(csv_file, "r") as f:
-                    reader = csv.DictReader(f)
-                    for row in reader:
-                        existing_dates.add(row["test_date"])
-
             for d in dates:
-                if d not in existing_dates:
+                if (ticker, d) not in completed_tasks_set:
                     tasks.append((ticker, d))
+        
 
     total_tasks = len(tasks)
     if total_tasks == 0:
@@ -176,6 +181,13 @@ def run_variation(
     
     trading_graph.quick_thinking_llm = quick_capture
     trading_graph.deep_thinking_llm = deep_capture
+    
+    # CRITICAL: Also update the sub-components that were initialized with the real LLMs
+    trading_graph.graph_setup.quick_thinking_llm = quick_capture
+    trading_graph.graph_setup.deep_thinking_llm = deep_capture
+    trading_graph.reflector.llm = quick_capture
+    trading_graph.signal_processor.llm = quick_capture
+    
     # Re-setup graph with capture llm
     trading_graph.graph = trading_graph.graph_setup.setup_graph(analysts)
 
@@ -193,12 +205,34 @@ def run_variation(
         # Step A: Run until node and Capture Prompts (Parallelized)
         captured_count = 0
         
+        # Incremental batch file for this node
+        batch_file_path = f"batches/batch_{variation_id}_{node_name.replace(' ', '_')}.jsonl"
+        bm.current_batch_file = batch_file_path
+        
+        # Load existing requests from partial batch file if it exists
+        already_captured_ids = set()
+        if os.path.exists(batch_file_path):
+            print(f"[{variation_id}] Loading existing captured requests from {batch_file_path}...")
+            with open(batch_file_path, "r") as f:
+                for line in f:
+                    try:
+                        req = json.loads(line)
+                        already_captured_ids.add(req["custom_id"])
+                        # Also add to bm.requests so submit_batch finds them
+                        bm.requests.append(req)
+                    except:
+                        pass
+            print(f"[{variation_id}] Found {len(already_captured_ids)} previously captured requests.")
         def capture_task(t, d):
             custom_id_base = f"{variation_id}_{t}_{d}_{node_name.replace(' ', '_')}"
-            # Important: custom_id must be managed carefully in threads
-            # Since quick_capture and deep_capture are global in run_variation,
-            # we need to ensure the BatchManager handles ID injection per call or 
-            # we use local model instances if needed.
+            
+            # Skip if we already have this in our incremental batch file
+            # Note: We check a prefix because unique_custom_id includes a hash
+            if any(cid.startswith(custom_id_base) for cid in already_captured_ids):
+                return "captured"
+                
+            quick_capture.current_custom_id = custom_id_base
+            deep_capture.current_custom_id = custom_id_base
             
             try:
                 config_thread = {"configurable": {"thread_id": f"{variation_id}_{t}_{d}"}}
@@ -215,7 +249,8 @@ def run_variation(
             except BatchCaptureException:
                 return "captured"
             except Exception as e:
-                return f"error: {str(e)}"
+                import traceback
+                return f"error: {traceback.format_exc()}"
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from tqdm import tqdm
@@ -237,30 +272,57 @@ def run_variation(
                 pbar.update(1)
             pbar.close()
 
-        # Step B: Submit Batch if we have requests
+        # Step B: Submit Batch in Chunks
         if bm.requests:
-            print(f"[{variation_id}] Submitting batch with {len(bm.requests)} requests for {node_name}...", flush=True)
-            batch_id = bm.submit_batch(f"batches/batch_{variation_id}_{node_name.replace(' ', '_')}.jsonl")
+            BATCH_CHUNK_SIZE = 100
+            print(f"[{variation_id}] Splitting {len(bm.requests)} requests into chunks of {BATCH_CHUNK_SIZE} for safety...", flush=True)
             
-            # Save to pending_batches.json and EXIT
-            pending = {}
-            if os.path.exists("pending_batches.json"):
-                with open("pending_batches.json", "r") as f:
-                    pending = json.load(f)
+            # Split list into chunks
+            chunks = [bm.requests[i:i + BATCH_CHUNK_SIZE] for i in range(0, len(bm.requests), BATCH_CHUNK_SIZE)]
             
-            pending[batch_id] = {
-                "variation_id": variation_id,
-                "node_name": node_name,
-                "analysts": analysts,
-                "tasks": tasks,
-                "timestamp": time.time()
-            }
-            
-            with open("pending_batches.json", "w") as f:
-                json.dump(pending, f, indent=4)
+            for i, chunk_requests in enumerate(chunks):
+                # Use a specific file name for each chunk part
+                chunk_file = f"batches/batch_{variation_id}_{node_name.replace(' ', '_')}_part{i}.jsonl"
                 
-            print(f"[{variation_id}] Batch {batch_id} submitted for {node_name}. Tracking in pending_batches.json.", flush=True)
-            return "pending"
+                # We use a temporary manager to submit this specific chunk
+                temp_bm = OpenAIBatchManager()
+                temp_bm.requests = chunk_requests
+                
+                try:
+                    print(f"[{variation_id}] Submitting sub-batch {i+1}/{len(chunks)} ({len(chunk_requests)} requests)...", flush=True)
+                    batch_id = temp_bm.submit_batch(chunk_file)
+                    print(f"[{variation_id}] Sub-batch {batch_id} submitted.")
+                    
+                    # Track this chunk in pending_batches.json
+                    chunk_tasks = []
+                    for r in chunk_requests:
+                        parts = r["custom_id"].split("_")
+                        if len(parts) >= 3:
+                            chunk_tasks.append((parts[1], parts[2]))
+                    
+                    pending = {}
+                    if os.path.exists("pending_batches.json"):
+                        with open("pending_batches.json", "r") as f:
+                            pending = json.load(f)
+                    
+                    pending[batch_id] = {
+                        "variation_id": variation_id,
+                        "node_name": node_name,
+                        "analysts": analysts,
+                        "tasks": chunk_tasks,
+                        "timestamp": time.time()
+                    }
+                    
+                    with open("pending_batches.json", "w") as f:
+                        json.dump(pending, f, indent=4)
+                        
+                except Exception as e:
+                    print(f"[{variation_id}] FAILED to submit sub-batch {i+1}: {e}", flush=True)
+                    print(f"[{variation_id}] Captured requests are safe in {chunk_file}. Top up credits and restart.")
+            
+            # After submitting all possible chunks, exit to wait for results
+            print(f"[{variation_id}] Finished processing sub-batches for {node_name}. Exiting to wait for results.")
+            sys.exit(0)
         else:
             print(f"[{variation_id}] No NEW LLM requests for node {node_name}, moving to next node or finalizing.", flush=True)
 
@@ -377,7 +439,7 @@ def main():
     trading_dates = get_trading_dates()
     print(f"Total evaluation dates: {len(trading_dates)}", flush=True)
 
-    # # SHORT TEST MODE: If you want to verify the batching logic quickly, uncomment these lines:
+    # SHORT TEST MODE: If you want to verify the batching logic quickly, uncomment these lines:
     # print("DEBUG: Running in SHORT_TEST mode (2 tickers, 2 dates)")
     # trading_dates = trading_dates[:2]
     # # global ETFS

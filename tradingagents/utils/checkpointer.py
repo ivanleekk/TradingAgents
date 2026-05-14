@@ -1,116 +1,215 @@
 import os
-import json
-import time
+import sqlite3
 import pickle
-import shutil
 import logging
-from collections import defaultdict
-from contextlib import ExitStack
-from typing import Any, Optional, Dict
-from langgraph.checkpoint.memory import InMemorySaver
-import threading
+from typing import Any, Optional, Iterator, Dict, List, Tuple
+from langgraph.checkpoint.base import (
+    BaseCheckpointSaver,
+    Checkpoint,
+    CheckpointMetadata,
+    CheckpointTuple,
+    SerializerProtocol,
+)
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 logger = logging.getLogger(__name__)
 
-class FilePersistentDict(defaultdict):
-    """A defaultdict that persists to a file using pickle."""
-    def __init__(self, filename: str, *args, **kwargs):
-        self.filename = filename
-        super().__init__(*args, **kwargs)
-        if os.path.exists(self.filename):
-            self.load()
-
-    _lock = threading.Lock()
-
-    def sync(self) -> None:
-        """Write dict to disk using a thread-safe direct write."""
-        from pathlib import Path
-        file_path = Path(self.filename)
-        
-        # Ensure the directory exists
-        try:
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-        except Exception as e:
-            logger.error(f"Failed to create directory {file_path.parent}: {e}")
-            return
-
-        # Prepare the data
-        data = {k: (dict(v) if isinstance(v, defaultdict) else v) for k, v in self.items()}
-
-        # Thread-safe write
-        with self._lock:
-            try:
-                with open(self.filename, "wb") as f:
-                    pickle.dump(data, f)
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except:
-                        pass
-            except Exception as e:
-                print(f"CRITICAL SYNC ERROR: {e}")
-                logger.error(f"Failed to sync to {self.filename}: {e}")
-
-    def load(self) -> None:
-        """Load dict from disk with robustness for pickle fragility."""
-        if not os.path.exists(self.filename):
-            return
-        try:
-            with open(self.filename, "rb") as f:
-                data = pickle.load(f)
-                if isinstance(data, dict):
-                    self.update(data)
-                else:
-                    logger.error(f"Data in {self.filename} is not a dict: {type(data)}")
-        except (EOFError, pickle.UnpicklingError, AttributeError, ModuleNotFoundError) as e:
-            logger.error(f"CRITICAL: Failed to load checkpointer from {self.filename}: {e}")
-            logger.error("State might be corrupted. Attempting to preserve what's left...")
-            # If load fails, we keep the empty defaultdict or the partially loaded state.
-            # In a production environment, we might want to backup the corrupted file for analysis.
-            backup_name = self.filename + f".corrupt.{int(time.time())}"
-            shutil.copy2(self.filename, backup_name)
-            logger.error(f"Corrupted state backed up to {backup_name}")
-
-    def __setitem__(self, key, value):
-        super().__setitem__(key, value)
-        # Optional: sync on every write for high durability, or manually sync
-        # self.sync() 
-
-class TradingGraphCheckpointer(InMemorySaver):
+class TradingGraphCheckpointer(BaseCheckpointSaver):
     """
-    A persistent checkpointer for LangGraph that saves to disk.
-    Wraps InMemorySaver but uses FilePersistentDict for storage.
+    A robust SQLite-based checkpointer for LangGraph.
+    Stores checkpoints and writes in a relational database for atomicity and durability.
     """
-    def __init__(self, checkpoint_dir: str = "data_dir/checkpoints", serde=None):
+
+    def __init__(
+        self, 
+        checkpoint_dir: str = "data_dir/checkpoints", 
+        serde: Optional[SerializerProtocol] = None
+    ):
+        # Use JsonPlusSerializer as default, consistent with LangGraph defaults
+        super().__init__(serde=serde or JsonPlusSerializer())
         self.checkpoint_dir = os.path.abspath(checkpoint_dir)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        
-        # Use absolute paths to prevent Errno 2 issues in different environments
-        storage_file = os.path.join(self.checkpoint_dir, "storage.pkl")
-        writes_file = os.path.join(self.checkpoint_dir, "writes.pkl")
-        blobs_file = os.path.join(self.checkpoint_dir, "blobs.pkl")
+        self.db_path = os.path.join(self.checkpoint_dir, "checkpoints.db")
+        self._init_db()
 
-        # We need to be careful with the defaultdict factory lambdas as they aren't picklable
-        # So we use a custom load/save logic in FilePersistentDict
-        
-        self.storage_dict = FilePersistentDict(storage_file, lambda: defaultdict(dict))
-        self.writes_dict = FilePersistentDict(writes_file, dict)
-        self.blobs_dict = FilePersistentDict(blobs_file, tuple)
-        
-        super().__init__(serde=serde)
-        
-        # Override the memory storage with our persistent ones
-        self.storage = self.storage_dict
-        self.writes = self.writes_dict
-        self.blobs = self.blobs_dict
+    def _init_db(self):
+        """Initialize the SQLite database schema."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS checkpoints (
+                    thread_id TEXT,
+                    checkpoint_ns TEXT,
+                    checkpoint_id TEXT,
+                    checkpoint BLOB,
+                    metadata BLOB,
+                    parent_checkpoint_id TEXT,
+                    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS writes (
+                    thread_id TEXT,
+                    checkpoint_ns TEXT,
+                    checkpoint_id TEXT,
+                    task_id TEXT,
+                    idx INTEGER,
+                    channel TEXT,
+                    value BLOB,
+                    PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx)
+                )
+                """
+            )
+            conn.commit()
 
-    def put(self, *args, **kwargs):
-        res = super().put(*args, **kwargs)
-        self.storage_dict.sync()
-        self.blobs_dict.sync()
-        return res
+    def get_tuple(self, config: dict) -> Optional[CheckpointTuple]:
+        """Retrieve a checkpoint tuple for the given configuration."""
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_id = config["configurable"].get("checkpoint_id")
 
-    def put_writes(self, *args, **kwargs):
-        res = super().put_writes(*args, **kwargs)
-        self.writes_dict.sync()
-        return res
+        with sqlite3.connect(self.db_path) as conn:
+            if checkpoint_id:
+                query = (
+                    "SELECT checkpoint_id, checkpoint, metadata, parent_checkpoint_id "
+                    "FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?"
+                )
+                params = (thread_id, checkpoint_ns, checkpoint_id)
+            else:
+                # Get the latest checkpoint if no ID is provided
+                query = (
+                    "SELECT checkpoint_id, checkpoint, metadata, parent_checkpoint_id "
+                    "FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ? "
+                    "ORDER BY checkpoint_id DESC LIMIT 1"
+                )
+                params = (thread_id, checkpoint_ns)
+
+            cursor = conn.execute(query, params)
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            res_id, checkpoint_blob, metadata_blob, parent_id = row
+            
+            # Load writes for this checkpoint
+            writes_cursor = conn.execute(
+                "SELECT task_id, channel, value FROM writes "
+                "WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?",
+                (thread_id, checkpoint_ns, res_id)
+            )
+            pending_writes = [
+                (task_id, channel, self.serde.loads(value_blob))
+                for task_id, channel, value_blob in writes_cursor
+            ]
+
+            return CheckpointTuple(
+                config={
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": res_id,
+                    }
+                },
+                checkpoint=self.serde.loads(checkpoint_blob),
+                metadata=self.serde.loads(metadata_blob),
+                parent_config={
+                    "configurable": {
+                        "thread_id": thread_id,
+                        "checkpoint_ns": checkpoint_ns,
+                        "checkpoint_id": parent_id,
+                    }
+                } if parent_id else None,
+                pending_writes=pending_writes
+            )
+
+    def list(self, config: dict, *, filter: Optional[dict] = None, before: Optional[dict] = None, limit: Optional[int] = None) -> Iterator[CheckpointTuple]:
+        """List checkpoints matching the criteria."""
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        
+        query = "SELECT checkpoint_id, checkpoint, metadata, parent_checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ?"
+        params = [thread_id, checkpoint_ns]
+        
+        if before:
+            query += " AND checkpoint_id < ?"
+            params.append(before["configurable"]["checkpoint_id"])
+            
+        query += " ORDER BY checkpoint_id DESC"
+        if limit:
+            query += f" LIMIT {limit}"
+            
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute(query, params)
+            for row in cursor:
+                res_id, checkpoint_blob, metadata_blob, parent_id = row
+                yield CheckpointTuple(
+                    config={
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": checkpoint_ns,
+                            "checkpoint_id": res_id,
+                        }
+                    },
+                    checkpoint=self.serde.loads(checkpoint_blob),
+                    metadata=self.serde.loads(metadata_blob),
+                    parent_config={
+                        "configurable": {
+                            "thread_id": thread_id,
+                            "checkpoint_ns": checkpoint_ns,
+                            "checkpoint_id": parent_id,
+                        }
+                    } if parent_id else None
+                )
+
+    def put(self, config: dict, checkpoint: Checkpoint, metadata: CheckpointMetadata, new_releases: Any) -> dict:
+        """Store a checkpoint."""
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_id = checkpoint["id"]
+        parent_id = config["configurable"].get("checkpoint_id")
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    thread_id,
+                    checkpoint_ns,
+                    checkpoint_id,
+                    self.serde.dumps(checkpoint),
+                    self.serde.dumps(metadata),
+                    parent_id
+                )
+            )
+            conn.commit()
+
+        return {
+            "configurable": {
+                "thread_id": thread_id,
+                "checkpoint_ns": checkpoint_ns,
+                "checkpoint_id": checkpoint_id,
+            }
+        }
+
+    def put_writes(self, config: dict, writes: List[tuple[str, Any]], task_id: str) -> None:
+        """Store writes for a specific task."""
+        thread_id = config["configurable"]["thread_id"]
+        checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
+        checkpoint_id = config["configurable"]["checkpoint_id"]
+
+        with sqlite3.connect(self.db_path) as conn:
+            for idx, (channel, value) in enumerate(writes):
+                conn.execute(
+                    "INSERT OR REPLACE INTO writes VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        thread_id,
+                        checkpoint_ns,
+                        checkpoint_id,
+                        task_id,
+                        idx,
+                        channel,
+                        self.serde.dumps(value)
+                    )
+                )
+            conn.commit()
