@@ -190,32 +190,52 @@ def run_variation(
     for node_name in nodes:
         print(f"[{variation_id}] --- Wave: {node_name} ---", flush=True)
         
-        # Step A: Run until node and Capture Prompts
+        # Step A: Run until node and Capture Prompts (Parallelized)
         captured_count = 0
-        for (t, d) in tasks:
+        
+        def capture_task(t, d):
             custom_id_base = f"{variation_id}_{t}_{d}_{node_name.replace(' ', '_')}"
-            quick_capture.current_custom_id = custom_id_base
-            deep_capture.current_custom_id = custom_id_base
+            # Important: custom_id must be managed carefully in threads
+            # Since quick_capture and deep_capture are global in run_variation,
+            # we need to ensure the BatchManager handles ID injection per call or 
+            # we use local model instances if needed.
+            
             try:
-                # Load current state from checkpointer
                 config_thread = {"configurable": {"thread_id": f"{variation_id}_{t}_{d}"}}
                 state_tuple = trading_graph.graph.get_state(config_thread)
-                
-                # Determine input: use initial state if thread is brand new, otherwise None to resume
                 initial_input = None if state_tuple.values else states[(t, d)]
                 
-                # Run until we hit the node
                 config_step = {"configurable": {"thread_id": f"{variation_id}_{t}_{d}"}, "interrupt_before": [node_name]}
                 trading_graph.graph.invoke(initial_input, config=config_step)
                 
-                # Now execute the node itself to trigger CaptureLLM
                 config_step["interrupt_after"] = [node_name]
                 config_step.pop("interrupt_before")
                 trading_graph.graph.invoke(None, config=config_step)
+                return "finished"
             except BatchCaptureException:
-                captured_count += 1
+                return "captured"
             except Exception as e:
-                print(f"Error in capture for {t} {d} node {node_name}: {e}")
+                return f"error: {str(e)}"
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from tqdm import tqdm
+        max_workers = 15 # Adjust based on CPU/Network
+        print(f"[{variation_id}] Parallelizing capture for {len(tasks)} tasks on node {node_name}...", flush=True)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(capture_task, t, d): (t, d) for (t, d) in tasks}
+            
+            # Progress bar for the capture wave
+            pbar = tqdm(total=len(tasks), desc=f"[{variation_id}] Wave: {node_name}")
+            for future in as_completed(futures):
+                res = future.result()
+                if res == "captured":
+                    captured_count += 1
+                elif res.startswith("error"):
+                    t_err, d_err = futures[future]
+                    print(f"\nError in capture for {t_err} {d_err} node {node_name}: {res}")
+                pbar.update(1)
+            pbar.close()
 
         # Step B: Submit Batch if we have requests
         if bm.requests:
