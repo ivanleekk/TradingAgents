@@ -202,6 +202,20 @@ def run_variation(
     for node_name in nodes:
         print(f"[{variation_id}] --- Wave: {node_name} ---", flush=True)
         
+        # CHECK: Is there an active batch for this node already?
+        if os.path.exists("pending_batches.json"):
+            with open("pending_batches.json", "r") as f:
+                pending = json.load(f)
+                is_node_pending = False
+                for bid, meta in pending.items():
+                    if meta.get("variation_id") == variation_id and meta.get("node_name") == node_name:
+                        print(f"[{variation_id}] Node {node_name} has a PENDING batch at OpenAI ({bid}).")
+                        is_node_pending = True
+                
+                if is_node_pending:
+                    print(f"[{variation_id}] Exiting to wait for results. Progress is safe.")
+                    return "pending"
+
         # Step A: Run until node and Capture Prompts (Parallelized)
         captured_count = 0
         
@@ -466,13 +480,14 @@ def main():
     config["online_tools"] = True
     config["data_dir"] = "./data_dir"
 
-    # Check status of previous batches for THIS variation only
-    check_and_resume_batches(config, target_variation_id=var_id)
 
     if len(sys.argv) > 1:
         # Run specific variation provided as argument
         var_id = sys.argv[1].upper()
         if var_id in VARIATIONS:
+            # Check status of previous batches for THIS variation only
+            check_and_resume_batches(config, target_variation_id=var_id)
+            
             analysts = VARIATIONS[var_id]
             run_variation(var_id, analysts, trading_dates, config, ETFS)
         else:
@@ -484,6 +499,9 @@ def main():
     else:
         # Run all variations sequentially
         for var_id, analysts in VARIATIONS.items():
+            # Check status of previous batches for THIS variation only
+            check_and_resume_batches(config, target_variation_id=var_id)
+            
             run_variation(var_id, analysts, trading_dates, config, ETFS)
 
     # Final check for pending batches
