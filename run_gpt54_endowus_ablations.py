@@ -213,7 +213,7 @@ def run_variation(
                         is_node_pending = True
                 
                 if is_node_pending:
-                    print(f"[{variation_id}] Exiting to wait for results. Progress is safe.")
+                    print(f"[{variation_id}] Node {node_name} has pending tasks. Moving to next check.")
                     return "pending"
 
         # Step A: Run until node and Capture Prompts (Parallelized)
@@ -335,9 +335,9 @@ def run_variation(
                     print(f"[{variation_id}] FAILED to submit sub-batch {i+1}: {e}", flush=True)
                     print(f"[{variation_id}] Captured requests are safe in {chunk_file}. Top up credits and restart.")
             
-            # After submitting all possible chunks, exit to wait for results
-            print(f"[{variation_id}] Finished processing sub-batches for {node_name}. Exiting to wait for results.")
-            sys.exit(0)
+            # After submitting all possible chunks, return to wait for results
+            print(f"[{variation_id}] Finished processing sub-batches for {node_name}. Moving to next check.")
+            return "pending"
         else:
             print(f"[{variation_id}] No NEW LLM requests for node {node_name}, moving to next node or finalizing.", flush=True)
 
