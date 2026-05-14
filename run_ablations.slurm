@@ -29,13 +29,28 @@ mkdir -p runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 echo "Syncing dependencies..."
 uv sync || echo "uv sync skipped or failed, continuing..."
 
-# Run the ablation for the specific variation
-echo "Executing Variation $VAR..."
-# Pass the variation letter as the first argument to the script
-uv run run_gpt54_endowus_ablations.py $VAR
+# Run the ablation for the specific variation with persistent polling
+echo "Starting persistent run for Variation $VAR..."
 
-echo "=========================================="
-echo "Variation $VAR finished at $(date)"
+while true; do
+    echo "--- [$(date)] Polling for updates for Variation $VAR ---"
+    
+    # Run the script and capture output to check for completion
+    # We use 'tee' so you can still see the output in run.out
+    uv run run_gpt54_endowus_ablations.py $VAR 2>&1 | tee runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/last_poll.log
+    
+    # Check if the script finished everything
+    if grep -q "All tasks and variations completed successfully" runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/last_poll.log; then
+        echo "=========================================="
+        echo "SUCCESS: Variation $VAR is 100% complete!"
+        echo "Finished at $(date)"
+        echo "=========================================="
+        break
+    fi
+    
+    echo "Variation $VAR still has pending batches or more steps. Sleeping 15 minutes..."
+    sleep 900
+done
 echo "=========================================="
 # Check exit status
 EXIT_CODE=$?
