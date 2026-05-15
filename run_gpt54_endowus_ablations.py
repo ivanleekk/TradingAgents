@@ -35,32 +35,32 @@ os.makedirs("gpt54_endowus_D", exist_ok=True)
 
 ETFS = [
     "0P0001AF7U.SI",  # Dimensional Global Core Equity Fund
-    # "0P0000KYEE.SI",  # PIMCO GIS Global Bond Fund SGD-Hedged
-    # "SPY",  # iShares US Index Fund (IE) S&P 500
-    # "^990100-USD-STRD",  # iShares Developed World Index Fund (IE)
-    # "DE000SLA4YD9.SG",  # Amundi Prime USA Fund
-    # "AGGG.L",  # Amundi Core Global Aggregate Bond SGD-Hedged
-    # "IE0002461055.IR",  # PIMCO GIS Income Fund SGD-Hedged
-    # "0P0001AF7Z.SI",  # Dimensional Emerging Markets Large Cap Core Equity Fund
-    # "0P0001EQUE.SI",  # Dimensional Global Core Fixed Income Fund SGD-Hedged
-    # "0P0001EF2T.SI",  # Dimensional Pacific Basin Small Companies Fund
-    # "0P0001CC3M",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
-    # "PEBIX",  # iShares Emerging Markets Government Bond Index Fund (IE)
-    # "EIMI.L",  # Amundi Core MSCI Emerging Markets Fund
-    # "0P0001DWI0.SI",  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
+    "0P0000KYEE.SI",  # PIMCO GIS Global Bond Fund SGD-Hedged
+    "SPY",  # iShares US Index Fund (IE) S&P 500
+    "^990100-USD-STRD",  # iShares Developed World Index Fund (IE)
+    "DE000SLA4YD9.SG",  # Amundi Prime USA Fund
+    "AGGG.L",  # Amundi Core Global Aggregate Bond SGD-Hedged
+    "IE0002461055.IR",  # PIMCO GIS Income Fund SGD-Hedged
+    "0P0001AF7Z.SI",  # Dimensional Emerging Markets Large Cap Core Equity Fund
+    "0P0001EQUE.SI",  # Dimensional Global Core Fixed Income Fund SGD-Hedged
+    "0P0001EF2T.SI",  # Dimensional Pacific Basin Small Companies Fund
+    "0P0001CC3M",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    "PEBIX",  # iShares Emerging Markets Government Bond Index Fund (IE)
+    "EIMI.L",  # Amundi Core MSCI Emerging Markets Fund
+    "0P0001DWI0.SI",  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
 ]
 
 # Event Windows (Core dates, padding will be added programmatically)
 EVENTS = {
-    "ALL": ("2020-01-01", "2024-12-31"),
+    "ALL": ("2020-01-01", "2020-12-31"),
 }
 
 # Define the 4 Ablation Variations
 VARIATIONS = {
-    # "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
+    "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
     "B": ["news"],  # News (Geopolitical/Financial headlines)
-    # "C": ["market"],  # Technicals (SMA, MACD, RSI)
-    # "D": ["market", "news", "fundamentals"],  # Full Debate setup
+    "C": ["market"],  # Technicals (SMA, MACD, RSI)
+    "D": ["market", "news", "fundamentals"],  # Full Debate setup
 }
 
 
@@ -201,6 +201,21 @@ def run_variation(
     
     for node_name in nodes:
         print(f"[{variation_id}] --- Wave: {node_name} ---", flush=True)
+        if os.path.exists("pending_batches.json"):
+            with open("pending_batches.json", "r") as f:
+                try:
+                    pending = json.load(f)
+                    is_node_pending = False
+                    for bid, meta in pending.items():
+                        if meta.get("variation_id") == variation_id and meta.get("node_name") == node_name:
+                            print(f"[{variation_id}] Node {node_name} has a PENDING batch at OpenAI ({bid}).")
+                            is_node_pending = True
+                    
+                    if is_node_pending:
+                        print(f"[{variation_id}] Exiting wave to wait for results. Progress is safe.")
+                        return "pending"
+                except json.JSONDecodeError:
+                    pass
         
         # Ensure we use the full task list passed into run_variation
         tasks_to_capture = tasks
@@ -226,6 +241,12 @@ def run_variation(
             try:
                 config_thread = {"configurable": {"thread_id": f"{variation_id}_{t}_{d}"}}
                 state_tuple = trading_graph.graph.get_state(config_thread)
+                
+                # CRITICAL FIX: Only capture if the task is actually at the target node.
+                # If the task is already past this node, skip it for this wave.
+                if state_tuple.next and node_name not in state_tuple.next:
+                    return "finished"
+                
                 initial_input = None if state_tuple.values else states[(t, d)]
                 
                 config_step = {"configurable": {"thread_id": f"{variation_id}_{t}_{d}"}, "interrupt_before": [node_name]}

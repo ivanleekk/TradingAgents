@@ -45,6 +45,20 @@ class OpenAIBatchManager:
         # Incremental saving to disk
         if hasattr(self, 'current_batch_file') and self.current_batch_file:
             os.makedirs(os.path.dirname(self.current_batch_file), exist_ok=True)
+            
+            # OpenAI Batch API requirement: One model per batch file.
+            if os.path.exists(self.current_batch_file) and os.path.getsize(self.current_batch_file) > 0:
+                with open(self.current_batch_file, "r") as f:
+                    try:
+                        first_line = f.readline()
+                        if first_line:
+                            existing_model = json.loads(first_line)["body"]["model"]
+                            if existing_model != model:
+                                print(f"WARNING: Skipping request {custom_id} because model {model} does not match batch file model {existing_model}")
+                                return
+                    except Exception:
+                        pass # Corrupt file, will overwrite or append anyway
+            
             with open(self.current_batch_file, "a") as f:
                 f.write(json.dumps(request) + "\n")
 
@@ -102,9 +116,10 @@ class OpenAIBatchManager:
             res = json.loads(line)
             custom_id = res["custom_id"]
             if res["response"]["status_code"] == 200:
-                results[custom_id] = res["response"]["body"]["choices"][0]["message"]["content"]
+                # Save the ENTIRE message dictionary, not just 'content'
+                results[custom_id] = res["response"]["body"]["choices"][0]["message"]
             else:
-                results[custom_id] = f"ERROR: {res['response']['body']}"
+                results[custom_id] = {"content": f"ERROR: {res['response']['body']}"}
         return results
 
     def get_batch_status(self, batch_id: str) -> str:
@@ -154,8 +169,37 @@ class CaptureLLM(BaseChatModel):
 
         # Check if we already have a result injected
         if unique_custom_id in self.batch_manager.results:
-            content = self.batch_manager.results[unique_custom_id]
-            return ChatResult(generations=[ChatGeneration(message=AIMessage(content=content))])
+            message_data = self.batch_manager.results[unique_custom_id]
+            
+            # Reconstruct AIMessage properly, handling Tool Calls and None content
+            if isinstance(message_data, dict):
+                # Fallback to empty string if content is None
+                content = message_data.get("content") or "" 
+                
+                # Parse LangChain tool calls
+                lc_tool_calls = []
+                raw_tool_calls = message_data.get("tool_calls", [])
+                
+                if raw_tool_calls:
+                    import json
+                    for tc in raw_tool_calls:
+                        if tc.get("type") == "function":
+                            lc_tool_calls.append({
+                                "name": tc["function"]["name"],
+                                "args": json.loads(tc["function"]["arguments"]),
+                                "id": tc["id"]
+                            })
+                            
+                ai_message = AIMessage(
+                    content=content, 
+                    tool_calls=lc_tool_calls,
+                    additional_kwargs={"tool_calls": raw_tool_calls} if raw_tool_calls else {}
+                )
+            else:
+                # Fallback just in case you load older cached string data
+                ai_message = AIMessage(content=message_data or "")
+
+            return ChatResult(generations=[ChatGeneration(message=ai_message)])
             
         # Otherwise capture and return placeholder
         self.batch_manager.add_request(

@@ -16,6 +16,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._is_looping(messages):
+                print("WARNING: Loop detected in Market Analyst tool calls. Forcing completion.")
+                return "Msg Clear Market"
             return "tools_market"
         return "Msg Clear Market"
 
@@ -24,6 +27,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._is_looping(messages):
+                print("WARNING: Loop detected in Social Analyst tool calls. Forcing completion.")
+                return "Msg Clear Social"
             return "tools_social"
         return "Msg Clear Social"
 
@@ -32,6 +38,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._is_looping(messages):
+                print("WARNING: Loop detected in News Analyst tool calls. Forcing completion.")
+                return "Msg Clear News"
             return "tools_news"
         return "Msg Clear News"
 
@@ -40,6 +49,9 @@ class ConditionalLogic:
         messages = state["messages"]
         last_message = messages[-1]
         if last_message.tool_calls:
+            if self._is_looping(messages):
+                print("WARNING: Loop detected in Fundamentals Analyst tool calls. Forcing completion.")
+                return "Msg Clear Fundamentals"
             return "tools_fundamentals"
         return "Msg Clear Fundamentals"
 
@@ -65,3 +77,23 @@ class ConditionalLogic:
         if state["risk_debate_state"]["latest_speaker"].startswith("Safe"):
             return "Neutral Analyst"
         return "Risky Analyst"
+
+    def _is_looping(self, messages, max_repeats=3):
+        """Check if the last tool call has been repeated too many times."""
+        if not messages or not hasattr(messages[-1], "tool_calls") or not messages[-1].tool_calls:
+            return False
+            
+        last_tool_call = messages[-1].tool_calls[0]
+        tool_name = last_tool_call.get("name")
+        tool_args = str(last_tool_call.get("args"))
+        
+        count = 0
+        # Iterate backwards through messages
+        for msg in reversed(messages):
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                tc = msg.tool_calls[0]
+                if tc.get("name") == tool_name and str(tc.get("args")) == tool_args:
+                    count += 1
+            if count >= max_repeats:
+                return True
+        return False
