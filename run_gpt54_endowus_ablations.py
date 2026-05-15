@@ -14,6 +14,8 @@ from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.utils.batch_manager import OpenAIBatchManager, CaptureLLM, BatchCaptureException
 from pathlib import Path
 import json
+# Global pending file tracking
+PENDING_FILE = "pending_batches.json"
 
 # Ensure output directories exist
 os.makedirs("gpt54_endowus_A", exist_ok=True)
@@ -52,7 +54,7 @@ ETFS = [
 
 # Event Windows (Core dates, padding will be added programmatically)
 EVENTS = {
-    "ALL": ("2020-01-01", "2020-12-31"),
+    "ALL": ("2020-01-01", "2023-12-31"),
 }
 
 # Define the 4 Ablation Variations
@@ -201,8 +203,8 @@ def run_variation(
     
     for node_name in nodes:
         print(f"[{variation_id}] --- Wave: {node_name} ---", flush=True)
-        if os.path.exists("pending_batches.json"):
-            with open("pending_batches.json", "r") as f:
+        if os.path.exists(PENDING_FILE):
+            with open(PENDING_FILE, "r") as f:
                 try:
                     pending = json.load(f)
                     is_node_pending = False
@@ -311,8 +313,8 @@ def run_variation(
                             chunk_tasks.append((parts[1], parts[2]))
                     
                     pending = {}
-                    if os.path.exists("pending_batches.json"):
-                        with open("pending_batches.json", "r") as f:
+                    if os.path.exists(PENDING_FILE):
+                        with open(PENDING_FILE, "r") as f:
                             pending = json.load(f)
                     
                     pending[batch_id] = {
@@ -323,9 +325,9 @@ def run_variation(
                         "timestamp": time.time()
                     }
                     
-                    with open("pending_batches.json.tmp", "w") as f:
+                    with open(f"{PENDING_FILE}.tmp", "w") as f:
                         json.dump(pending, f, indent=4)
-                    os.replace("pending_batches.json.tmp", "pending_batches.json")
+                    os.replace(f"{PENDING_FILE}.tmp", PENDING_FILE)
                         
                 except Exception as e:
                     print(f"[{variation_id}] FAILED to submit sub-batch {i+1}: {e}", flush=True)
@@ -382,10 +384,10 @@ def run_variation(
 
 def check_and_resume_batches(config: Dict, target_variation_id: str = None):
     """Checks for pending batches and resumes them ONLY if all chunks for a node are completed."""
-    if not os.path.exists("pending_batches.json"):
+    if not os.path.exists(PENDING_FILE):
         return
-
-    with open("pending_batches.json", "r") as f:
+        
+    with open(PENDING_FILE, "r") as f:
         pending = json.load(f)
 
     if not pending:
@@ -445,14 +447,13 @@ def check_and_resume_batches(config: Dict, target_variation_id: str = None):
             
             # CRITICAL: Remove these completed batches from the JSON *before* resuming
             # so they aren't processed again or marked as "busy"
-            with open("pending_batches.json", "r") as f:
-                current_pending = json.load(f)
+            with open(PENDING_FILE, "r") as f:
+                pending = json.load(f)
             for bid in group_batches.keys():
-                if bid in current_pending:
-                    del current_pending[bid]
-            with open("pending_batches.json.tmp", "w") as f:
-                json.dump(current_pending, f, indent=4)
-            os.replace("pending_batches.json.tmp", "pending_batches.json")
+                pending.pop(bid, None)
+            with open(f"{PENDING_FILE}.tmp", "w") as f:
+                json.dump(pending, f, indent=4)
+            os.replace(f"{PENDING_FILE}.tmp", PENDING_FILE)
             
             # Resume the graph!
             run_variation(
@@ -468,6 +469,7 @@ def check_and_resume_batches(config: Dict, target_variation_id: str = None):
             print(f">>> Wave '{node_name}' for Variation {var_id} is still processing at OpenAI. Waiting.")
 
 def main():
+    global PENDING_FILE
     print("Gathering dates for event windows...", flush=True)
     trading_dates = get_trading_dates()
     print(f"Total evaluation dates: {len(trading_dates)}", flush=True)
@@ -497,6 +499,9 @@ def main():
         # Run specific variation provided as argument
         var_id = sys.argv[1].upper()
         if var_id in VARIATIONS:
+            # For safety in parallel Slurm jobs, use variation-specific pending files
+            PENDING_FILE = f"pending_batches_{var_id}.json"
+            
             # Check status of previous batches for THIS variation only
             check_and_resume_batches(config, target_variation_id=var_id)
             
@@ -511,14 +516,17 @@ def main():
     else:
         # Run all variations sequentially
         for var_id, analysts in VARIATIONS.items():
+            # Update PENDING_FILE for each variation in the loop
+            PENDING_FILE = f"pending_batches_{var_id}.json"
+            
             # Check status of previous batches for THIS variation only
             check_and_resume_batches(config, target_variation_id=var_id)
             
             run_variation(var_id, analysts, trading_dates, config, ETFS)
 
     # Final check for pending batches
-    if os.path.exists("pending_batches.json"):
-        with open("pending_batches.json", "r") as f:
+    if os.path.exists(PENDING_FILE):
+        with open(PENDING_FILE, "r") as f:
             pending = json.load(f)
             if pending:
                 print(f"\nThere are {len(pending)} batches still pending at OpenAI. Rerun this script later to resume.", flush=True)
