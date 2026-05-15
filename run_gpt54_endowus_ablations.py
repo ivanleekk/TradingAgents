@@ -35,19 +35,19 @@ os.makedirs("gpt54_endowus_D", exist_ok=True)
 
 ETFS = [
     "0P0001AF7U.SI",  # Dimensional Global Core Equity Fund
-    "0P0000KYEE.SI",  # PIMCO GIS Global Bond Fund SGD-Hedged
-    "SPY",  # iShares US Index Fund (IE) S&P 500
-    "^990100-USD-STRD",  # iShares Developed World Index Fund (IE)
-    "DE000SLA4YD9.SG",  # Amundi Prime USA Fund
-    "AGGG.L",  # Amundi Core Global Aggregate Bond SGD-Hedged
-    "IE0002461055.IR",  # PIMCO GIS Income Fund SGD-Hedged
-    "0P0001AF7Z.SI",  # Dimensional Emerging Markets Large Cap Core Equity Fund
-    "0P0001EQUE.SI",  # Dimensional Global Core Fixed Income Fund SGD-Hedged
-    "0P0001EF2T.SI",  # Dimensional Pacific Basin Small Companies Fund
-    "0P0001CC3M",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
-    "PEBIX",  # iShares Emerging Markets Government Bond Index Fund (IE)
-    "EIMI.L",  # Amundi Core MSCI Emerging Markets Fund
-    "0P0001DWI0.SI",  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
+    # "0P0000KYEE.SI",  # PIMCO GIS Global Bond Fund SGD-Hedged
+    # "SPY",  # iShares US Index Fund (IE) S&P 500
+    # "^990100-USD-STRD",  # iShares Developed World Index Fund (IE)
+    # "DE000SLA4YD9.SG",  # Amundi Prime USA Fund
+    # "AGGG.L",  # Amundi Core Global Aggregate Bond SGD-Hedged
+    # "IE0002461055.IR",  # PIMCO GIS Income Fund SGD-Hedged
+    # "0P0001AF7Z.SI",  # Dimensional Emerging Markets Large Cap Core Equity Fund
+    # "0P0001EQUE.SI",  # Dimensional Global Core Fixed Income Fund SGD-Hedged
+    # "0P0001EF2T.SI",  # Dimensional Pacific Basin Small Companies Fund
+    # "0P0001CC3M",  # iShares Global Aggregate 1-5 Year Bond Index Fund (IE) SGD-Hedged
+    # "PEBIX",  # iShares Emerging Markets Government Bond Index Fund (IE)
+    # "EIMI.L",  # Amundi Core MSCI Emerging Markets Fund
+    # "0P0001DWI0.SI",  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
 ]
 
 # Event Windows (Core dates, padding will be added programmatically)
@@ -57,10 +57,10 @@ EVENTS = {
 
 # Define the 4 Ablation Variations
 VARIATIONS = {
-    "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
+    # "A": ["fundamentals", "market"],  # Fundamentals/Macro (Rates, CPI, GDP) + Price
     "B": ["news"],  # News (Geopolitical/Financial headlines)
-    "C": ["market"],  # Technicals (SMA, MACD, RSI)
-    "D": ["market", "news", "fundamentals"],  # Full Debate setup
+    # "C": ["market"],  # Technicals (SMA, MACD, RSI)
+    # "D": ["market", "news", "fundamentals"],  # Full Debate setup
 }
 
 
@@ -202,49 +202,24 @@ def run_variation(
     for node_name in nodes:
         print(f"[{variation_id}] --- Wave: {node_name} ---", flush=True)
         
-        # CHECK: Is there an active batch for this node already?
-        if os.path.exists("pending_batches.json"):
-            with open("pending_batches.json", "r") as f:
-                pending = json.load(f)
-                is_node_pending = False
-                for bid, meta in pending.items():
-                    if meta.get("variation_id") == variation_id and meta.get("node_name") == node_name:
-                        print(f"[{variation_id}] Node {node_name} has a PENDING batch at OpenAI ({bid}).")
-                        is_node_pending = True
-                
-                if is_node_pending:
-                    print(f"[{variation_id}] Node {node_name} has pending tasks. Moving to next check.")
-                    return "pending"
+        # Ensure we use the full task list passed into run_variation
+        tasks_to_capture = tasks
+        
+        if not tasks_to_capture:
+            print(f"[{variation_id}] No tasks to capture for node {node_name}, moving to next.")
+            continue
 
-        # Step A: Run until node and Capture Prompts (Parallelized)
+        # Step B: Run until node and Capture Prompts (Parallelized)
         captured_count = 0
         
         # Incremental batch file for this node
         batch_file_path = f"batches/batch_{variation_id}_{node_name.replace(' ', '_')}.jsonl"
-        bm.current_batch_file = batch_file_path
-        
-        # Load existing requests from partial batch file if it exists
-        already_captured_ids = set()
         if os.path.exists(batch_file_path):
-            print(f"[{variation_id}] Loading existing captured requests from {batch_file_path}...")
-            with open(batch_file_path, "r") as f:
-                for line in f:
-                    try:
-                        req = json.loads(line)
-                        already_captured_ids.add(req["custom_id"])
-                        # Also add to bm.requests so submit_batch finds them
-                        bm.requests.append(req)
-                    except:
-                        pass
-            print(f"[{variation_id}] Found {len(already_captured_ids)} previously captured requests.")
+            os.remove(batch_file_path) # Prevent poison pill loop
+        bm.current_batch_file = batch_file_path
         def capture_task(t, d):
             custom_id_base = f"{variation_id}_{t}_{d}_{node_name.replace(' ', '_')}"
             
-            # Skip if we already have this in our incremental batch file
-            # Note: We check a prefix because unique_custom_id includes a hash
-            if any(cid.startswith(custom_id_base) for cid in already_captured_ids):
-                return "captured"
-                
             quick_capture.current_custom_id = custom_id_base
             deep_capture.current_custom_id = custom_id_base
             
@@ -272,10 +247,10 @@ def run_variation(
         print(f"[{variation_id}] Parallelizing capture for {len(tasks)} tasks on node {node_name}...", flush=True)
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(capture_task, t, d): (t, d) for (t, d) in tasks}
+            futures = {executor.submit(capture_task, t, d): (t, d) for (t, d) in tasks_to_capture}
             
             # Progress bar for the capture wave
-            pbar = tqdm(total=len(tasks), desc=f"[{variation_id}] Wave: {node_name}")
+            pbar = tqdm(total=len(tasks_to_capture), desc=f"[{variation_id}] Wave: {node_name}")
             for future in as_completed(futures):
                 res = future.result()
                 if res == "captured":
@@ -385,7 +360,7 @@ def run_variation(
 
 
 def check_and_resume_batches(config: Dict, target_variation_id: str = None):
-    """Checks for pending batches and resumes them if completed."""
+    """Checks for pending batches and resumes them ONLY if all chunks for a node are completed."""
     if not os.path.exists("pending_batches.json"):
         return
 
@@ -396,64 +371,80 @@ def check_and_resume_batches(config: Dict, target_variation_id: str = None):
         return
 
     bm = OpenAIBatchManager()
-    still_pending = {}
     
-    # We collect all completed results first to avoid partial resumptions
-    completed_any = False
-    
-    for batch_id, meta in list(pending.items()):
-        # ONLY process batches for the current variation to avoid race conditions
+    # Step 1: Group batches by Variation and Node
+    # Format: { ("A", "Market Analyst"): { "batch_123": meta, "batch_456": meta } }
+    groups = {}
+    for bid, meta in pending.items():
         if target_variation_id and meta.get("variation_id") != target_variation_id:
-            still_pending[batch_id] = meta
             continue
+        key = (meta["variation_id"], meta["node_name"])
+        if key not in groups:
+            groups[key] = {}
+        groups[key][bid] = meta
 
-        try:
-            status = bm.get_batch_status(batch_id)
-            print(f"Checking Batch {batch_id} status: {status}")
+    # Step 2: Check each group
+    for (var_id, node_name), group_batches in groups.items():
+        all_completed = True
+        group_results = {}
+        group_failed = False
+        
+        print(f"\nChecking wave '{node_name}' for Variation {var_id} ({len(group_batches)} chunks)...")
+        
+        for bid, meta in group_batches.items():
+            try:
+                status = bm.get_batch_status(bid)
+                print(f"  - Chunk {bid}: {status}")
+                if status == "completed":
+                    group_results[bid] = bm._get_results(bm.client.batches.retrieve(bid).output_file_id)
+                elif status in ["failed", "expired", "cancelled"]:
+                    print(f"  - WARNING: Chunk {bid} ended with {status}.")
+                    group_failed = True
+                    all_completed = False
+                else:
+                    all_completed = False # Still validating or in_progress
+            except Exception as e:
+                print(f"  - Error checking batch {bid}: {e}")
+                all_completed = False
+
+        # Step 3: Only resume if the ENTIRE wave is done
+        if all_completed and not group_failed:
+            print(f">>> ALL chunks for {var_id} '{node_name}' completed! Consolidating and resuming...")
             
-            if status == "completed":
-                print(f"Batch {batch_id} COMPLETED. Downloading results for {meta['variation_id']} at {meta['node_name']}...")
-                results = bm._get_results(bm.client.batches.retrieve(batch_id).output_file_id)
-                bm.results.update(results)
-                completed_any = True
-                
-                # After downloading results, we can potentially resume the variation
-                # But we should do it AFTER checking all batches to maximize progress in one run
-                status = run_variation(
-                    meta["variation_id"], 
-                    meta["analysts"], 
-                    [], 
-                    config, 
-                    tickers=[], 
-                    tasks=meta["tasks"],
-                    batch_manager=bm
-                )
-                if status == "pending":
-                    # It hit another node and submitted a new batch, which was already added to pending or will be
-                    # Since we are iterating on a copy/original list, we need to refresh pending from disk or manage state
-                    pass
-            elif status in ["failed", "expired", "cancelled"]:
-                print(f"WARNING: Batch {batch_id} ended with {status}. Manual intervention required.")
-            else:
-                still_pending[batch_id] = meta
-        except Exception as e:
-            print(f"Error checking batch {batch_id}: {e}")
-            still_pending[batch_id] = meta
-
-    # Refresh pending from disk in case run_variation added new ones
-    if os.path.exists("pending_batches.json"):
-        with open("pending_batches.json", "r") as f:
-            latest_pending = json.load(f)
-            # Remove the ones we processed
-            for bid in list(latest_pending.keys()):
-                if bid in pending and bid not in still_pending:
-                    del latest_pending[bid]
-            still_pending = latest_pending
-
-    with open("pending_batches.json.tmp", "w") as f:
-        json.dump(still_pending, f, indent=4)
-    os.replace("pending_batches.json.tmp", "pending_batches.json")
-
+            # Combine all results into one batch manager
+            for res in group_results.values():
+                bm.results.update(res)
+            
+            # Reconstruct the full task list from the metadata
+            all_tasks = []
+            for meta in group_batches.values():
+                all_tasks.extend([tuple(t) for t in meta["tasks"]])
+            all_tasks = list(set(all_tasks)) # Ensure uniqueness
+            analysts = list(group_batches.values())[0]["analysts"]
+            
+            # CRITICAL: Remove these completed batches from the JSON *before* resuming
+            # so they aren't processed again or marked as "busy"
+            with open("pending_batches.json", "r") as f:
+                current_pending = json.load(f)
+            for bid in group_batches.keys():
+                if bid in current_pending:
+                    del current_pending[bid]
+            with open("pending_batches.json.tmp", "w") as f:
+                json.dump(current_pending, f, indent=4)
+            os.replace("pending_batches.json.tmp", "pending_batches.json")
+            
+            # Resume the graph!
+            run_variation(
+                var_id, 
+                analysts, 
+                [], 
+                config, 
+                tickers=[], 
+                tasks=all_tasks,
+                batch_manager=bm
+            )
+        else:
+            print(f">>> Wave '{node_name}' for Variation {var_id} is still processing at OpenAI. Waiting.")
 
 def main():
     print("Gathering dates for event windows...", flush=True)

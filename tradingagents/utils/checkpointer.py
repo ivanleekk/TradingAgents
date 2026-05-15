@@ -34,7 +34,7 @@ class TradingGraphCheckpointer(BaseCheckpointSaver):
 
     def _init_db(self):
         """Initialize the SQLite database schema."""
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=60.0) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS checkpoints (
@@ -70,7 +70,7 @@ class TradingGraphCheckpointer(BaseCheckpointSaver):
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = config["configurable"].get("checkpoint_id")
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=60.0) as conn:
             if checkpoint_id:
                 query = (
                     "SELECT checkpoint_id, checkpoint, metadata, parent_checkpoint_id "
@@ -140,7 +140,7 @@ class TradingGraphCheckpointer(BaseCheckpointSaver):
         if limit:
             query += f" LIMIT {limit}"
             
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=60.0) as conn:
             cursor = conn.execute(query, params)
             for row in cursor:
                 res_id, checkpoint_blob, metadata_blob, parent_id = row
@@ -170,7 +170,7 @@ class TradingGraphCheckpointer(BaseCheckpointSaver):
         checkpoint_id = checkpoint["id"]
         parent_id = config["configurable"].get("checkpoint_id")
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=60.0) as conn:
             conn.execute(
                 "INSERT OR REPLACE INTO checkpoints VALUES (?, ?, ?, ?, ?, ?)",
                 (
@@ -198,7 +198,7 @@ class TradingGraphCheckpointer(BaseCheckpointSaver):
         checkpoint_ns = config["configurable"].get("checkpoint_ns", "")
         checkpoint_id = config["configurable"]["checkpoint_id"]
 
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self.db_path, timeout=60.0) as conn:
             for idx, (channel, value) in enumerate(writes):
                 conn.execute(
                     "INSERT OR REPLACE INTO writes VALUES (?, ?, ?, ?, ?, ?, ?)",
