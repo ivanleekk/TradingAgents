@@ -135,6 +135,9 @@ class CaptureLLM(BaseChatModel):
     
     batch_manager: OpenAIBatchManager = Field(exclude=True)
     model: str = "gpt-5.4"
+
+    # ADDED: A dictionary to hold extra API parameters like caching configs
+    model_kwargs: Dict[str, Any] = Field(default_factory=dict)
     
     @property
     def current_custom_id(self) -> str:
@@ -151,6 +154,8 @@ class CaptureLLM(BaseChatModel):
         run_manager: Optional[Any] = None,
         **kwargs: Any,
     ) -> ChatResult:
+        # ADDED: Merge runtime kwargs with our persistent model_kwargs
+        merged_kwargs = {**self.model_kwargs, **kwargs}
         # Extract prompt in OpenAI format
         openai_messages = []
         full_text = ""
@@ -201,12 +206,12 @@ class CaptureLLM(BaseChatModel):
 
             return ChatResult(generations=[ChatGeneration(message=ai_message)])
             
-        # Otherwise capture and return placeholder
+        # MODIFIED: Pass merged_kwargs instead of just kwargs
         self.batch_manager.add_request(
             custom_id=unique_custom_id,
             model=self.model,
             messages=openai_messages,
-            **kwargs
+            **merged_kwargs
         )
         
         raise BatchCaptureException(f"Prompt captured for {unique_custom_id}")

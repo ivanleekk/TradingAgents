@@ -21,27 +21,25 @@ def create_social_media_analyst(llm, toolkit):
             + """ Make sure to append a Makrdown table at the end of the report to organize key points in the report, organized and easy to read.""",
         )
 
+        from tradingagents.agents.utils.prompts import SHARED_COLLABORATION_PROMPT, get_context_prompt
+
         prompt = ChatPromptTemplate.from_messages(
             [
                 (
                     "system",
-                    "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. The current company we want to analyze is {ticker}",
+                    SHARED_COLLABORATION_PROMPT + 
+                    "\n\nYou have access to the following tools: {tool_names}.\n\n"
+                    "{system_message}" + 
+                    "{context}"
                 ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
         )
 
+        context = get_context_prompt(current_date, ticker)
         prompt = prompt.partial(system_message=system_message)
         prompt = prompt.partial(tool_names=", ".join([tool.name for tool in tools]))
-        prompt = prompt.partial(current_date=current_date)
-        prompt = prompt.partial(ticker=ticker)
+        prompt = prompt.partial(context=context)
 
         chain = prompt | llm.bind_tools(tools)
 

@@ -54,7 +54,7 @@ ETFS = [
 
 # Event Windows (Core dates, padding will be added programmatically)
 EVENTS = {
-    "ALL": ("2020-01-01", "2023-12-31"),
+    "ALL": ("2020-01-01", "2020-06-30"),
 }
 
 # Define the 4 Ablation Variations
@@ -178,8 +178,10 @@ def run_variation(
     trading_graph = TradingAgentsGraph(selected_analysts=analysts, config=config)
     
     # Replace real LLMs with CaptureLLM
-    quick_capture = CaptureLLM(batch_manager=bm, model=config["quick_think_llm"])
-    deep_capture = CaptureLLM(batch_manager=bm, model=config["deep_think_llm"])
+    quick_capture = CaptureLLM(batch_manager=bm, model=config["quick_think_llm"], model_kwargs={"prompt_cache_retention":"in_memory",
+        "prompt_cache_key":f"TradingAgents"})
+    deep_capture = CaptureLLM(batch_manager=bm, model=config["deep_think_llm"], model_kwargs={"prompt_cache_retention":"24h",
+        "prompt_cache_key":f"TradingAgents"})
     
     trading_graph.quick_thinking_llm = quick_capture
     trading_graph.deep_thinking_llm = deep_capture

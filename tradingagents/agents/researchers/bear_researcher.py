@@ -22,29 +22,42 @@ def create_bear_researcher(llm, memory):
         for i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
-        prompt = f"""You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.
+        from langchain_core.prompts import ChatPromptTemplate
+        from tradingagents.agents.utils.prompts import SHARED_COLLABORATION_PROMPT
 
-Key points to focus on:
+        prompt_template = ChatPromptTemplate.from_messages([
+            ("system", SHARED_COLLABORATION_PROMPT),
+            ("system", 
+                "You are a Bear Analyst making the case against investing in the stock. Your goal is to present a well-reasoned argument emphasizing risks, challenges, and negative indicators. Leverage the provided research and data to highlight potential downsides and counter bullish arguments effectively.\n\n"
+                "Key points to focus on:\n"
+                "- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.\n"
+                "- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.\n"
+                "- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.\n"
+                "- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.\n"
+                "- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts."
+            ),
+            ("user", 
+                "Resources available:\n"
+                "Market research report: {market_research_report}\n"
+                "Social media sentiment report: {sentiment_report}\n"
+                "Latest world affairs news: {news_report}\n"
+                "Company fundamentals report: {fundamentals_report}\n"
+                "Conversation history of the debate: {history}\n"
+                "Last bull argument: {current_response}\n"
+                "Reflections from similar situations and lessons learned: {past_memory_str}\n\n"
+                "Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the stock. You must also address reflections and learn from lessons and mistakes you made in the past."
+            )
+        ])
 
-- Risks and Challenges: Highlight factors like market saturation, financial instability, or macroeconomic threats that could hinder the stock's performance.
-- Competitive Weaknesses: Emphasize vulnerabilities such as weaker market positioning, declining innovation, or threats from competitors.
-- Negative Indicators: Use evidence from financial data, market trends, or recent adverse news to support your position.
-- Bull Counterpoints: Critically analyze the bull argument with specific data and sound reasoning, exposing weaknesses or over-optimistic assumptions.
-- Engagement: Present your argument in a conversational style, directly engaging with the bull analyst's points and debating effectively rather than simply listing facts.
-
-Resources available:
-
-Market research report: {market_research_report}
-Social media sentiment report: {sentiment_report}
-Latest world affairs news: {news_report}
-Company fundamentals report: {fundamentals_report}
-Conversation history of the debate: {history}
-Last bull argument: {current_response}
-Reflections from similar situations and lessons learned: {past_memory_str}
-Use this information to deliver a compelling bear argument, refute the bull's claims, and engage in a dynamic debate that demonstrates the risks and weaknesses of investing in the stock. You must also address reflections and learn from lessons and mistakes you made in the past.
-"""
-
-        response = llm.invoke(prompt)
+        response = llm.invoke(prompt_template.format_messages(
+            market_research_report=market_research_report,
+            sentiment_report=sentiment_report,
+            news_report=news_report,
+            fundamentals_report=fundamentals_report,
+            history=history,
+            current_response=current_response,
+            past_memory_str=past_memory_str
+        ))
 
         argument = f"Bear Analyst: {response.content}"
 
