@@ -22,6 +22,18 @@ echo "Running Variation: $VAR"
 echo "Node: $SLURM_NODELIST"
 echo "=========================================="
 
+# Ensure local bin is in PATH
+export PATH="/home/i/ivanlee/.local/bin:$PATH"
+
+# Automatically check, install, or fix uv for the current node's architecture
+if ! uv --version >/dev/null 2>&1; then
+    echo "uv not found or incompatible CPU architecture on node $SLURM_NODELIST. Installing/updating uv..."
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    export PATH="/home/i/ivanlee/.local/bin:$PATH"
+else
+    echo "✓ uv is active and working on node $SLURM_NODELIST ($(uv --version))"
+fi
+
 # Create output directory for this array task
 mkdir -p runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 
