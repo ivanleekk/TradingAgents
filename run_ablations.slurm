@@ -11,7 +11,6 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=ivan.lee@u.nus.edu
 
-# Map array ID to Variation letter (0->A, 1->B, 2->C, 3->D)
 VARS=("A" "B" "C" "D")
 VAR=${VARS[$SLURM_ARRAY_TASK_ID]}
 
@@ -22,16 +21,16 @@ echo "Running Variation: $VAR"
 echo "Node: $SLURM_NODELIST"
 echo "=========================================="
 
-# 1. Isolate the binary directory by architecture to prevent NFS race conditions
+# 1. Isolate the binary directory by architecture
 ARCH=$(uname -m)
 ARCH_BIN="$HOME/.local/bin_$ARCH"
 mkdir -p "$ARCH_BIN"
 
-# Put the architecture-specific bin at the front of the PATH
-export PATH="$ARCH_BIN:$HOME/.local/bin:$PATH"
+# Define the absolute path to the correct uv binary
+UV_EXE="$ARCH_BIN/uv"
 
-# 2. Check and install architecture-specific uv safely without overwriting other nodes
-if ! command -v uv >/dev/null 2>&1 || ! uv --version >/dev/null 2>&1; then
+# 2. Check and install architecture-specific uv using the ABSOLUTE path
+if ! "$UV_EXE" --version >/dev/null 2>&1; then
     echo "uv not found or incompatible CPU architecture on node $SLURM_NODELIST ($ARCH). Installing..."
     
     if [ "$ARCH" = "x86_64" ]; then
@@ -43,7 +42,7 @@ if ! command -v uv >/dev/null 2>&1 || ! uv --version >/dev/null 2>&1; then
         exit 1
     fi
 else
-    echo "✓ uv is active and working on node $SLURM_NODELIST ($(uv --version))"
+    echo "✓ uv is active and working on node $SLURM_NODELIST ($("$UV_EXE" --version))"
 fi
 
 # Partition virtual environments by CPU architecture
@@ -53,9 +52,9 @@ echo "Using architecture-specific virtual environment: $UV_PROJECT_ENVIRONMENT"
 # Create output directory for this array task
 mkdir -p runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 
-# Sync dependencies
+# Sync dependencies using the explicit binary
 echo "Syncing dependencies..."
-uv sync || echo "uv sync skipped or failed, continuing..."
+"$UV_EXE" sync || echo "uv sync skipped or failed, continuing..."
 
 # Run the ablation for the specific variation with persistent polling
 echo "Starting persistent run for Variation $VAR..."
@@ -63,7 +62,8 @@ echo "Starting persistent run for Variation $VAR..."
 while true; do
     echo "--- [$(date)] Polling for updates for Variation $VAR ---"
     
-    uv run run_gpt54_endowus_ablations.py $VAR 2>&1 | tee runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/last_poll.log
+    # Execute python script using the absolute uv path
+    "$UV_EXE" run run_gpt54_endowus_ablations.py $VAR 2>&1 | tee runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/last_poll.log
     
     if grep -q "All tasks and variations completed successfully" runs/ablations_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}/last_poll.log; then
         echo "=========================================="
