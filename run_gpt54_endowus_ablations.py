@@ -54,7 +54,7 @@ ETFS = [
 
 # Event Windows (Core dates, padding will be added programmatically)
 EVENTS = {
-    "ALL": ("2020-01-01", "2020-06-30"),
+    "ALL": ("2020-01-01", "2024-12-31"),
 }
 
 # Define the 4 Ablation Variations
