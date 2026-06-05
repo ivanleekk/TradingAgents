@@ -45,6 +45,5 @@ dependencies = [
     "transformers>=4.53.3",
     "tushare>=1.4.21",
     "typing-extensions>=4.14.0",
-    "vllm>=0.10.0",
     "yfinance>=0.2.63",
 ]
