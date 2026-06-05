@@ -632,8 +632,16 @@ def get_YFin_data_online(
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ):
 
-    datetime.strptime(start_date, "%Y-%m-%d")
-    datetime.strptime(end_date, "%Y-%m-%d")
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+
+    # Enforce maximum lookback window of 2 years to prevent token limit issues
+    warning_msg = ""
+    limit_dt = end_dt - relativedelta(years=2)
+    if start_dt < limit_dt:
+        warning_msg = f"# WARNING: Requested start date {start_date} is too far in the past. To prevent context length overflow, the data has been truncated to start from {limit_dt.strftime('%Y-%m-%d')} (2-year lookback max).\n\n"
+        start_dt = limit_dt
+        start_date = start_dt.strftime("%Y-%m-%d")
 
     # Create ticker object
     ticker = yf.Ticker(symbol.upper())
@@ -644,7 +652,7 @@ def get_YFin_data_online(
     # Check if data is empty
     if data.empty:
         return (
-            f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
+            warning_msg + f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
         )
 
     # Remove timezone info from index for cleaner output
@@ -664,7 +672,7 @@ def get_YFin_data_online(
     header = f"# Stock data for {symbol.upper()} from {start_date} to {end_date}\n"
     header += f"# Total records: {len(data)}\n\n"
 
-    return header + csv_string
+    return warning_msg + header + csv_string
 
 
 def get_YFin_data(
@@ -684,6 +692,12 @@ def get_YFin_data(
         raise Exception(
             f"Get_YFin_Data: {end_date} is outside of the data range of 2015-01-01 to 2025-03-25"
         )
+
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+    limit_dt = end_dt - relativedelta(years=2)
+    if start_dt < limit_dt:
+        start_date = limit_dt.strftime("%Y-%m-%d")
 
     # Extract just the date part for comparison
     data["DateOnly"] = data["Date"].str[:10]
