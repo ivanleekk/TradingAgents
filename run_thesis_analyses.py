@@ -6,12 +6,13 @@ import os
 import glob
 import json
 import matplotlib.pyplot as plt
+import argparse
 
-def run_frictions_analysis():
+def run_frictions_analysis(results_dir="results"):
     print("--- 1. Turnover & Transaction Cost Sensitivity ---")
     # Load raw weights
-    w_weekly = pd.read_csv("results/weights_raw/LLM-BL-A_raw_weights.csv")
-    w_monthly = pd.read_csv("results/weights_raw/LLM-BL-A-Monthly_raw_weights.csv")
+    w_weekly = pd.read_csv(os.path.join(results_dir, "weights_raw/LLM-BL-A_raw_weights.csv"))
+    w_monthly = pd.read_csv(os.path.join(results_dir, "weights_raw/LLM-BL-A-Monthly_raw_weights.csv"))
     
     # Calculate period-over-period turnover
     def calc_avg_turnover(df):
@@ -27,7 +28,7 @@ def run_frictions_analysis():
     print(f"Average Monthly Turnover: {to_monthly*100:.2f}%")
     
     # Load equity curves for 0 bps baseline
-    df_returns = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df_returns = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df_returns['Unnamed: 0'] = pd.to_datetime(df_returns['Unnamed: 0'])
     df_returns.set_index('Unnamed: 0', inplace=True)
     
@@ -70,9 +71,9 @@ def run_frictions_analysis():
     return report_text
 
 
-def run_rolling_beta():
+def run_rolling_beta(results_dir="results"):
     print("\n--- 2. Rolling Beta Analysis ---")
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df['Unnamed: 0'] = pd.to_datetime(df['Unnamed: 0'])
     df.set_index('Unnamed: 0', inplace=True)
     
@@ -108,7 +109,7 @@ def run_rolling_beta():
     plt.grid(True, alpha=0.3)
     plt.legend()
     plt.tight_layout()
-    plt.savefig("results/thesis_plots/rolling_beta.png")
+    plt.savefig(os.path.join(results_dir, "thesis_plots/rolling_beta.png"))
     plt.close()
     
     avg_beta = beta.mean()
@@ -125,14 +126,14 @@ def run_rolling_beta():
     return report_text
 
 
-def run_crisis_alpha():
+def run_crisis_alpha(results_dir="results"):
     print("\n--- 3. Regime-Conditioned Statistical Testing (Crisis Alpha) ---")
     import yfinance as yf
     
     vix = yf.download("^VIX", start="2019-08-01", end="2025-01-01")['Close']
     vix = vix.resample('ME').last()
     
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df['Unnamed: 0'] = pd.to_datetime(df['Unnamed: 0'])
     df.set_index('Unnamed: 0', inplace=True)
     df_monthly = df.resample('ME').last()
@@ -180,9 +181,9 @@ def run_crisis_alpha():
     return report_text
 
 
-def run_attribution():
+def run_attribution(results_dir="results"):
     print("\n--- 4. Brinson-Fachler Attribution ---")
-    w_df = pd.read_csv("results/weights_raw/LLM-BL-A-Monthly-Banded_raw_weights.csv")
+    w_df = pd.read_csv(os.path.join(results_dir, "weights_raw/LLM-BL-A-Monthly-Banded_raw_weights.csv"))
     w_df['Date'] = pd.to_datetime(w_df['Date'])
     w_df.set_index('Date', inplace=True)
     
@@ -211,7 +212,7 @@ def run_attribution():
     plt.legend()
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
-    plt.savefig("results/thesis_plots/equity_allocation.png")
+    plt.savefig(os.path.join(results_dir, "thesis_plots/equity_allocation.png"))
     plt.close()
     
     # Calculate simple allocation vs selection proxy
@@ -219,7 +220,7 @@ def run_attribution():
     # Allocation = (Weight_Eq_P - Weight_Eq_B) * (Return_Eq_B - Return_FI_B)
     # Selection = Active Return - Allocation
     
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df['Unnamed: 0'] = pd.to_datetime(df['Unnamed: 0'])
     df.set_index('Unnamed: 0', inplace=True)
     df_m = df.resample('ME').last()
@@ -256,10 +257,10 @@ def run_attribution():
     return report_text
 
 
-def run_confidence_analysis():
+def run_confidence_analysis(results_dir="results", signals_prefix="results_endowus_"):
     print("\n--- 5. Conviction vs. Accuracy (The Omega Matrix Analysis) ---")
     
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df['Unnamed: 0'] = pd.to_datetime(df['Unnamed: 0'])
     df.set_index('Unnamed: 0', inplace=True)
     df_m = df.resample('ME').last()
@@ -283,7 +284,7 @@ def run_confidence_analysis():
     all_ars = []
     
     for i, model in enumerate(models):
-        files = glob.glob(f"results_endowus_{model}/*_decisions.csv")
+        files = glob.glob(f"{signals_prefix}{model}/*_decisions.csv")
         if not files:
             continue
             
@@ -368,7 +369,7 @@ def run_confidence_analysis():
         print(f"Global Pearson: {pearson_r:.3f} (p={p_val:.4f}), Spearman: {spearman_r:.3f} (p={sp_val:.4f})")
 
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-    plt.savefig("results/thesis_plots/confidence_scatter.png", bbox_inches='tight')
+    plt.savefig(os.path.join(results_dir, "thesis_plots/confidence_scatter.png"), bbox_inches='tight')
     plt.close()
     
     report_text += f"![Confidence Scatter Plot](./thesis_plots/confidence_scatter.png)\n"
@@ -377,16 +378,43 @@ def run_confidence_analysis():
 
 
 if __name__ == "__main__":
-    report1 = run_frictions_analysis()
-    report2 = run_rolling_beta()
-    report3 = run_crisis_alpha()
-    report4 = run_attribution()
-    report5 = run_confidence_analysis()
+    parser = argparse.ArgumentParser(description="Run thesis analyses")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="glm4",
+        help="Model prefix (e.g. glm4 or gpt54)"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Override output results directory"
+    )
+    args = parser.parse_args()
+
+    if args.results_dir is None:
+        results_dir = "results" if args.model == "glm4" else f"results_{args.model}"
+    else:
+        results_dir = args.results_dir
+
+    signals_prefix = "results_endowus_" if args.model == "glm4" else f"{args.model}_endowus_"
+
+    print(f"Running thesis analyses for model={args.model} | Signals={signals_prefix}* | Results={results_dir}")
+    os.makedirs(results_dir, exist_ok=True)
+    os.makedirs(os.path.join(results_dir, "thesis_plots"), exist_ok=True)
+
+    report1 = run_frictions_analysis(results_dir)
+    report2 = run_rolling_beta(results_dir)
+    report3 = run_crisis_alpha(results_dir)
+    report4 = run_attribution(results_dir)
+    report5 = run_confidence_analysis(results_dir, signals_prefix)
     
     final_report = "# Thesis Quantitative Analyses Report\n\n"
     final_report += report1 + report2 + report3 + report4 + report5
     
-    with open("results/thesis_analyses_report.md", "w") as f:
+    report_path = os.path.join(results_dir, "thesis_analyses_report.md")
+    with open(report_path, "w") as f:
         f.write(final_report)
     
-    print("\nReport successfully generated at results/thesis_analyses_report.md")
+    print(f"\nReport successfully generated at {report_path}")

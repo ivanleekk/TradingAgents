@@ -499,10 +499,14 @@ class Portfolio:
     def buy_target_weights(
         self, weights: dict[str, float], prices: dict[str, float], total_equity: float
     ):
-        target_tickers = set(weights.keys())
+        # Deterministic iteration order: the buy loop is cash-constrained, so
+        # set-hash ordering would decide which tickers get starved. See the
+        # matching note in systematic_bl_baseline.Portfolio.buy_target_weights.
+        target_tickers = list(weights.keys())
+        target_ticker_set = set(target_tickers)
         current_tickers = set(t for t, q in self.shares.items() if q > 0)
 
-        to_sell = list(current_tickers - target_tickers)
+        to_sell = sorted(current_tickers - target_ticker_set)
         self.liquidate(to_sell, prices)
 
         target_dollars = {t: total_equity * w for t, w in weights.items()}

@@ -417,17 +417,29 @@ def generate_markdown_report(all_metrics_df, event_plots, output_dir):
 
 
 def main():
+    import argparse as _argparse
+
+    _pre = _argparse.ArgumentParser(add_help=False)
+    _pre.add_argument(
+        "--results-dir",
+        default="results",
+        help="Directory holding the equity curves; event studies are written to its event_studies/ subfolder",
+    )
+    _pre_args, _ = _pre.parse_known_args()
+    results_dir = _pre_args.results_dir
+
     print("=" * 60)
     print("  Stress Testing & Event Studies Engine")
+    print(f"  Results dir: {results_dir}")
     print("=" * 60)
 
-    curves_path = "results/bl_equity_curves.csv"
+    curves_path = os.path.join(results_dir, "bl_equity_curves.csv")
     if os.path.exists(curves_path):
         df_bl = pd.read_csv(curves_path, index_col=0, parse_dates=True)
     else:
         df_bl = pd.DataFrame()
 
-    endowus_path = "results/endowus_systematic_equity_curves.csv"
+    endowus_path = os.path.join(results_dir, "endowus_systematic_equity_curves.csv")
     if os.path.exists(endowus_path):
         df_endowus = pd.read_csv(endowus_path, index_col=0, parse_dates=True)
     else:
@@ -455,7 +467,7 @@ def main():
     if excluded_cols:
         df = df.drop(columns=excluded_cols)
 
-    output_dir = "results/event_studies"
+    output_dir = os.path.join(results_dir, "event_studies")
     os.makedirs(output_dir, exist_ok=True)
 
     min_date = pd.to_datetime(min([d[0] for d in EVENTS.values()])) - pd.DateOffset(

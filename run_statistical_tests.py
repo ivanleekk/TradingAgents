@@ -3,11 +3,13 @@ import numpy as np
 import scipy.stats
 import statsmodels.api as sm
 import portfolio_common
+import argparse
+import os
 
 
-def calculate_tests():
+def calculate_tests(results_dir="results"):
     # 1. Load Data
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df["Unnamed: 0"] = pd.to_datetime(df["Unnamed: 0"])
     df.set_index("Unnamed: 0", inplace=True)
 
@@ -172,9 +174,29 @@ Comparing the Sharpe Ratio of the LLM vs the Benchmark accounting for the high c
 - **Jobson-Korkie $p$-value** (two-tailed): {p_value_jk:.4f}
 """
 
-    with open("results/significance_tests_report.md", "w") as f:
+    with open(os.path.join(results_dir, "significance_tests_report.md"), "w") as f:
         f.write(report)
 
 
 if __name__ == "__main__":
-    calculate_tests()
+    parser = argparse.ArgumentParser(description="Run statistical significance tests")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="glm4",
+        help="Model prefix (e.g., glm4 or gpt54)"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Override results directory"
+    )
+    args = parser.parse_args()
+
+    if args.results_dir is None:
+        r_dir = "results" if args.model == "glm4" else f"results_{args.model}"
+    else:
+        r_dir = args.results_dir
+
+    calculate_tests(r_dir)

@@ -37,6 +37,16 @@ OPTIMIZER_METHOD = "max-sharpe"
 OPTIMIZER_RISK_AVERSION = 2
 OPTIMIZER_CHOICES = ("max-sharpe", "max-quadratic-utility", "min-volatility")
 
+# Confidence -> Omega ablation. `baseline` is the published Idzorek-style linear
+# map. `constant` pins the scale at the c=5 value, removing the confidence
+# channel entirely. `shuffled` permutes confidences across tickers within each
+# date, destroying cross-sectional content while preserving the marginal
+# distribution. `flat` halves the slope.
+OMEGA_MODE = "baseline"
+OMEGA_SEED = 0
+OMEGA_CHOICES = ("baseline", "constant", "shuffled", "flat")
+OMEGA_CONSTANT_SCALE = 0.6
+
 # Endowus Flagship Target Weights
 ENDOWUS_WEIGHTS = {
     "0P0001AF7U.SI": 0.195,  # Dimensional Global Core Equity Fund
@@ -54,6 +64,10 @@ ENDOWUS_WEIGHTS = {
     "EIMI.L": 0.033,  # Amundi Core MSCI Emerging Markets Fund
     "0P0001DWI0.SI": 0.02,  # PIMCO GIS Emerging Markets Bond Fund SGD-Hedged
 }
+
+# Pristine copy so configure_universe() can restore the Endowus weights after
+# an ex-ante-proxy run has mutated ENDOWUS_WEIGHTS in place.
+_ENDOWUS_WEIGHTS_ORIGINAL = dict(ENDOWUS_WEIGHTS)
 
 EQUITY_ASSETS = [
     "0P0001AF7U.SI",
@@ -75,12 +89,45 @@ FIXED_INCOME_ASSETS = [
     "0P0001DWI0.SI",
 ]
 
+UNIVERSE_CHOICES = ("endowus", "equal-sleeve")
+UNIVERSE_MODE = "endowus"
+
 # Adjustable class-allocation target for optimization outputs.
 TARGET_EQUITY_ALLOCATION = 0.60
 TACTICAL_EQUITY_MIN = 0.4
 TACTICAL_EQUITY_MAX = 0.8
 TACTICAL_TAU_MIN = 0.05
 TACTICAL_TAU_MAX = 0.05
+
+# Trailing window used to estimate the Ledoit-Wolf covariance, in weeks.
+# 52 reproduces the published results. A shorter window lets instruments with
+# short price histories reach a *complete* window sooner, removing the
+# pre-inception backfill introduced by the .ffill().bfill() in the covariance
+# helpers, at the cost of a noisier estimate.
+COV_LOOKBACK_WEEKS = 52.0
+
+
+def configure_cov_lookback(weeks: float) -> None:
+    global COV_LOOKBACK_WEEKS
+    if weeks is None:
+        return
+    if float(weeks) <= 0:
+        raise ValueError(f"cov lookback must be positive, got: {weeks}")
+    COV_LOOKBACK_WEEKS = float(weeks)
+
+
+def configure_transaction_cost(cost: float) -> None:
+    """Set proportional cost on gross turnover (0.001 = 10bps)."""
+    global TRANSACTION_COST
+    if cost is None:
+        return
+    if float(cost) < 0:
+        raise ValueError(f"transaction cost must be non-negative, got: {cost}")
+    TRANSACTION_COST = float(cost)
+
+
+def cov_lookback_delta() -> pd.Timedelta:
+    return pd.Timedelta(weeks=COV_LOOKBACK_WEEKS)
 
 
 def configure_optimizer(method: str = "max-sharpe", risk_aversion: float = 2.5):
@@ -100,6 +147,77 @@ def configure_l2_gamma(gamma: float):
     if not np.isfinite(gamma):
         raise ValueError(f"l2 gamma must be finite, got: {gamma}")
     EFFICIENT_FRONTIER_L2_GAMMA = float(gamma)
+
+
+def configure_universe(mode: str = "endowus"):
+    """Swap the benchmark prior between the Endowus weights and an ex-ante proxy.
+
+    `equal-sleeve` keeps the 60/40 class split -- that is the product mandate,
+    not a look-ahead -- but equal-weights within each sleeve, removing the
+    intra-sleeve weights that were read off a March-2026 portfolio snapshot and
+    applied to a backtest starting in 2019.
+
+    Mutates ENDOWUS_WEIGHTS in place (preserving key order, so the yfinance
+    cache key and the deterministic rebalance order are both unchanged) because
+    call sites throughout the module hold references to this dict.
+    """
+    global UNIVERSE_MODE
+    if mode not in UNIVERSE_CHOICES:
+        raise ValueError(f"universe must be one of {UNIVERSE_CHOICES}, got: {mode}")
+    UNIVERSE_MODE = mode
+    if mode == "endowus":
+        new_weights = dict(_ENDOWUS_WEIGHTS_ORIGINAL)
+    else:
+        eq_w = TARGET_EQUITY_ALLOCATION / len(EQUITY_ASSETS)
+        fi_w = (1.0 - TARGET_EQUITY_ALLOCATION) / len(FIXED_INCOME_ASSETS)
+        new_weights = {
+            t: (eq_w if t in EQUITY_ASSETS else fi_w)
+            for t in _ENDOWUS_WEIGHTS_ORIGINAL
+        }
+    ENDOWUS_WEIGHTS.clear()
+    ENDOWUS_WEIGHTS.update(new_weights)
+
+
+def configure_omega(mode: str = "baseline", seed: int = 0):
+    global OMEGA_MODE, OMEGA_SEED
+    if mode not in OMEGA_CHOICES:
+        raise ValueError(f"omega mode must be one of {OMEGA_CHOICES}, got: {mode}")
+    OMEGA_MODE = mode
+    OMEGA_SEED = int(seed)
+
+
+def omega_scale_from_confidence(conf: float) -> float:
+    """Map a 1-10 confidence score to the Omega variance scale factor.
+
+    `shuffled` is not handled here: it permutes the confidences themselves at
+    signal-load time, so by the time we reach this function it is just the
+    baseline map applied to reassigned scores.
+    """
+    conf = min(max(float(conf), 1.0), 10.0)
+    if OMEGA_MODE == "constant":
+        return OMEGA_CONSTANT_SCALE
+    if OMEGA_MODE == "flat":
+        return max(1.0 - (conf / 20.0), 0.05)
+    return max(1.1 - (conf / 10.0), 0.05)
+
+
+def shuffle_confidences_by_date(signals: pd.DataFrame, seed: int) -> pd.DataFrame:
+    """Permute the confidence column across tickers within each date.
+
+    Preserves the marginal distribution of confidence scores exactly while
+    destroying any cross-sectional information they carry.
+    """
+    if signals is None or signals.empty or "confidence" not in signals.columns:
+        return signals
+    out = signals.copy()
+    rng = np.random.default_rng(seed)
+    for date, idx in out.groupby("Date").groups.items():
+        idx = list(idx)
+        if len(idx) < 2:
+            continue
+        vals = out.loc[idx, "confidence"].to_numpy()
+        out.loc[idx, "confidence"] = rng.permutation(vals)
+    return out
 
 
 def configure_risk_free_series(series: pd.Series | None):
@@ -1026,9 +1144,7 @@ def compute_llm_bl_weights_banded(
 
         omega_diag = []
         for t in active_set:
-            conf = float(confidences.get(t, 5.0))
-            conf = min(max(conf, 1.0), 10.0)
-            scale = max(1.1 - (conf / 10.0), 0.05)
+            scale = omega_scale_from_confidence(confidences.get(t, 5.0))
             var_t = float(np.real(np.asarray(cov_df.loc[t, t]).item()))
             omega_diag.append(var_t * scale)
         omega = np.diag(omega_diag)
@@ -1229,7 +1345,7 @@ def run_llm_banded_backtest(
                     }
                 )
 
-            lookback_start = date - pd.Timedelta(weeks=52)
+            lookback_start = date - cov_lookback_delta()
             history = daily_prices.loc[lookback_start:date, :]
 
             weights = compute_llm_bl_weights_banded(
@@ -1278,7 +1394,7 @@ def run_llm_banded_backtest(
                         }
                     )
 
-            te = port.total_equity(val_prices)
+            te = port.total_equity(exec_prices)
             port.buy_target_weights(weights, exec_prices, te)
             last_target_weights = weights.copy()
             if rebalance_policy == "buy-and-hold":
@@ -1360,10 +1476,23 @@ class Portfolio:
     def buy_target_weights(
         self, weights: dict[str, float], prices: dict[str, float], total_equity: float
     ):
-        target_tickers = set(weights.keys())
+        # NOTE: iteration order must be deterministic. The buy loop below is
+        # cash-constrained, so whichever tickers are visited last are the ones
+        # starved when cash runs short. Iterating a set makes that order depend
+        # on per-process string hashing (PYTHONHASHSEED), which made the whole
+        # backtest irreproducible across runs.
+        #
+        # Callers must pass `total_equity` valued at the SAME `prices` used
+        # here. Previously they valued at close while executing at next-open,
+        # so target dollars were unaffordable on 52% of rebalances (worst case
+        # 6.8% of the portfolio) and this loop silently truncated the tail of
+        # the iteration order. With matched valuation the targets are
+        # affordable by construction and the order no longer changes outcomes.
+        target_tickers = list(weights.keys())
+        target_ticker_set = set(target_tickers)
         current_tickers = set(t for t, q in self.shares.items() if q > 0)
 
-        to_sell = list(current_tickers - target_tickers)
+        to_sell = sorted(current_tickers - target_ticker_set)
         self.liquidate(to_sell, prices)
 
         target_dollars = {t: total_equity * w for t, w in weights.items()}
@@ -1505,7 +1634,7 @@ def run_endowus_backtest(
                             views[t] = row["target_return"]
                             confidences[t] = row["confidence"]
 
-                lookback_start = date - pd.Timedelta(weeks=52)
+                lookback_start = date - cov_lookback_delta()
                 history = daily_prices.loc[lookback_start:date, :]
 
                 weights = compute_llm_bl_weights(
@@ -1535,7 +1664,7 @@ def run_endowus_backtest(
                         }
                     )
 
-            te = port.total_equity(val_prices)
+            te = port.total_equity(exec_prices)
             port.buy_target_weights(weights, exec_prices, te)
             last_target_weights = weights.copy()
             if rebalance_policy == "buy-and-hold":
@@ -1603,12 +1732,12 @@ def run_systematic_backtest(
 
         P_rows, Q_vals = generate_signals(date, daily_prices, fred_data)
 
-        lookback_start = date - pd.Timedelta(weeks=52)
+        lookback_start = date - cov_lookback_delta()
         history = daily_prices.loc[lookback_start:date, :]
 
         weights = compute_systematic_bl_weights(active_set, history, P_rows, Q_vals)
 
-        te = port.total_equity(val_prices)
+        te = port.total_equity(exec_prices)
         port.buy_target_weights(weights, exec_prices, te)
         equity_curve[date] = port.total_equity(val_prices)
         weights_log[date] = weights
@@ -1665,12 +1794,12 @@ def run_markowitz_backtest(
 
         active_set = list(exec_prices.keys())
 
-        lookback_start = date - pd.Timedelta(weeks=52)
+        lookback_start = date - cov_lookback_delta()
         history = daily_prices.loc[lookback_start:date, :]
 
         weights = compute_markowitz_weights(active_set, history)
 
-        te = port.total_equity(val_prices)
+        te = port.total_equity(exec_prices)
         port.buy_target_weights(weights, exec_prices, te)
         equity_curve[date] = port.total_equity(val_prices)
         weights_log[date] = weights
@@ -1724,7 +1853,7 @@ def run_systematic_tactical_monthly_backtest(
         active_set = list(exec_prices.keys())
         P_rows, Q_vals = generate_signals(date, daily_prices, fred_data)
 
-        lookback_start = date - pd.Timedelta(weeks=52)
+        lookback_start = date - cov_lookback_delta()
         history = daily_prices.loc[lookback_start:date, :]
 
         weights = compute_systematic_bl_weights_tactical(
@@ -1738,7 +1867,7 @@ def run_systematic_tactical_monthly_backtest(
             equity_max=TACTICAL_EQUITY_MAX,
         )
 
-        te = port.total_equity(val_prices)
+        te = port.total_equity(exec_prices)
         port.buy_target_weights(weights, exec_prices, te)
         equity_curve[date] = port.total_equity(val_prices)
         weights_log[date] = weights
@@ -2105,10 +2234,14 @@ def load_fama_french_data_weekly(start: str, end: str) -> pd.DataFrame | None:
     cache_path = "data/ff5_factors_weekly.csv"
     if os.path.exists(cache_path):
         ff_weekly = pd.read_csv(cache_path, index_col=0, parse_dates=True)
+        # Bars are W-MON labelled/closed left, so the final bar starting at
+        # index[-1] covers the following six days. Comparing index[-1] directly
+        # against `end` therefore reported a miss whenever `end` fell inside the
+        # last bar, forcing a live re-download on every run.
         if (
             not ff_weekly.empty
             and ff_weekly.index[0] <= pd.to_datetime(start)
-            and ff_weekly.index[-1] >= pd.to_datetime(end)
+            and ff_weekly.index[-1] + pd.Timedelta(days=6) >= pd.to_datetime(end)
         ):
             return ff_weekly
 
@@ -2135,7 +2268,20 @@ def load_fama_french_data_monthly(start: str, end: str) -> pd.DataFrame | None:
     if os.path.exists(cache_path):
         ff_monthly = pd.read_csv(cache_path, index_col=0)
         ff_monthly.index = pd.to_datetime(ff_monthly.index.astype(str)).to_period("M")
-        return ff_monthly
+        # This check was missing entirely, so a short cache was returned
+        # unconditionally and monthly-strategy factor alphas were silently
+        # fitted on whatever subset of the sample the cache happened to cover.
+        if (
+            not ff_monthly.empty
+            and ff_monthly.index[0] <= pd.Period(pd.to_datetime(start), freq="M")
+            and ff_monthly.index[-1] >= pd.Period(pd.to_datetime(end), freq="M")
+        ):
+            return ff_monthly
+        print(
+            f"FF monthly cache covers {ff_monthly.index[0]}..{ff_monthly.index[-1]}, "
+            f"need {pd.Period(pd.to_datetime(start), freq='M')}.."
+            f"{pd.Period(pd.to_datetime(end), freq='M')}; refetching."
+        )
 
     try:
         ff_dict = web.DataReader(
@@ -2503,6 +2649,12 @@ def _run_single_strategy_worker(payload: dict) -> dict:
     configure_l2_gamma(payload["l2_gamma"])
     configure_risk_free_series(payload.get("risk_free_series"))
     configure_risk_free_rate(payload["risk_free_rate"])
+    # Module globals do NOT survive into ProcessPoolExecutor children (spawn
+    # re-imports and resets them to defaults), so re-apply from the payload.
+    configure_omega(payload.get("omega_mode", "baseline"), payload.get("omega_seed", 0))
+    configure_universe(payload.get("universe_mode", "endowus"))
+    configure_cov_lookback(payload.get("cov_lookback_weeks", 52.0))
+    configure_transaction_cost(payload.get("transaction_cost_cfg", 0.001))
 
     return _run_single_strategy(payload)
 
@@ -2546,13 +2698,79 @@ def main():
             "When set, date-varying ^IRX risk-free series is disabled."
         ),
     )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="glm4",
+        help="Model prefix for signals directory, e.g. glm4 or gpt54",
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Optional override for the output results directory",
+    )
+    parser.add_argument(
+        "--transaction-cost",
+        type=float,
+        default=TRANSACTION_COST,
+        help="Proportional cost on gross turnover (0.001 = 10bps)",
+    )
+    parser.add_argument(
+        "--cov-lookback-weeks",
+        type=float,
+        default=COV_LOOKBACK_WEEKS,
+        help=(
+            "Trailing window for the Ledoit-Wolf covariance, in weeks "
+            "(default 52). Shorter windows remove the pre-inception backfill "
+            "for short-history instruments at the cost of a noisier estimate."
+        ),
+    )
+    parser.add_argument(
+        "--omega-mode",
+        choices=list(OMEGA_CHOICES),
+        default=OMEGA_MODE,
+        help=(
+            "Confidence->Omega mapping ablation: baseline (1.1-c/10), "
+            "constant (confidence-blind), shuffled (permute confidences within "
+            "each date), flat (halved slope)"
+        ),
+    )
+    parser.add_argument(
+        "--omega-seed",
+        type=int,
+        default=OMEGA_SEED,
+        help="Seed for the shuffled omega mode",
+    )
+    parser.add_argument(
+        "--universe",
+        choices=list(UNIVERSE_CHOICES),
+        default=UNIVERSE_MODE,
+        help=(
+            "Benchmark prior: endowus (March-2026 snapshot weights) or "
+            "equal-sleeve (equal weights within each sleeve, 60/40 across)"
+        ),
+    )
     args = parser.parse_args()
     configure_optimizer(args.optimizer, args.risk_aversion)
     configure_l2_gamma(args.l2_gamma)
+    configure_omega(args.omega_mode, args.omega_seed)
+    configure_universe(args.universe)
+    configure_cov_lookback(args.cov_lookback_weeks)
+    configure_transaction_cost(args.transaction_cost)
+
+    if args.results_dir is None:
+        results_dir = "results" if args.model == "glm4" else f"results_{args.model}"
+    else:
+        results_dir = args.results_dir
+
+    signals_prefix = "results_endowus_" if args.model == "glm4" else f"{args.model}_endowus_"
+
     print(
         f"Optimizer: {OPTIMIZER_METHOD}"
         f" (risk_aversion={OPTIMIZER_RISK_AVERSION}, l2_gamma={EFFICIENT_FRONTIER_L2_GAMMA})"
     )
+    print(f"Model: {args.model} | Signals: {signals_prefix}* | Results: {results_dir}")
     print("  Systematic Black-Litterman Portfolio Engine")
     print("=" * 60)
 
@@ -2603,10 +2821,19 @@ def main():
     monthly_dates = monthly_prices.index
     monthly_exec_prices = get_execution_prices(daily_open, monthly_dates)
 
-    signals_A = load_bl_signal_csvs("results_endowus_A")
-    signals_B = load_bl_signal_csvs("results_endowus_B")
-    signals_C = load_bl_signal_csvs("results_endowus_C")
-    signals_D = load_bl_signal_csvs("results_endowus_D")
+    signals_A = load_bl_signal_csvs(f"{signals_prefix}A")
+    signals_B = load_bl_signal_csvs(f"{signals_prefix}B")
+    signals_C = load_bl_signal_csvs(f"{signals_prefix}C")
+    signals_D = load_bl_signal_csvs(f"{signals_prefix}D")
+
+    if OMEGA_MODE == "shuffled":
+        # Permute once, centrally, BEFORE the monthly alignment so that the
+        # weekly, monthly and banded variants all see the same reassignment.
+        print(f"Omega ablation: shuffling confidences (seed={OMEGA_SEED})")
+        signals_A = shuffle_confidences_by_date(signals_A, OMEGA_SEED)
+        signals_B = shuffle_confidences_by_date(signals_B, OMEGA_SEED + 1)
+        signals_C = shuffle_confidences_by_date(signals_C, OMEGA_SEED + 2)
+        signals_D = shuffle_confidences_by_date(signals_D, OMEGA_SEED + 3)
 
     signals_A_monthly = align_signals_to_month_end(signals_A)
     signals_B_monthly = align_signals_to_month_end(signals_B)
@@ -2657,6 +2884,11 @@ def main():
                 "l2_gamma": EFFICIENT_FRONTIER_L2_GAMMA,
                 "risk_free_rate": RISK_FREE_RATE,
                 "risk_free_series": RISK_FREE_SERIES,
+                "omega_mode": OMEGA_MODE,
+                "omega_seed": OMEGA_SEED,
+                "universe_mode": UNIVERSE_MODE,
+                "cov_lookback_weeks": COV_LOOKBACK_WEEKS,
+                "transaction_cost_cfg": TRANSACTION_COST,
             }
         )
 
@@ -2755,8 +2987,8 @@ def main():
         print(summary.to_string(index=False))
     print("=" * 70)
 
-    os.makedirs("results", exist_ok=True)
-    summary.to_csv("results/endowus_systematic_performance_summary.csv", index=False)
+    os.makedirs(results_dir, exist_ok=True)
+    summary.to_csv(os.path.join(results_dir, "endowus_systematic_performance_summary.csv"), index=False)
 
     label_col = None
     if "Strategy" in summary.columns:
@@ -2770,57 +3002,58 @@ def main():
         ]
         if not tactical_summary.empty:
             tactical_summary.to_csv(
-                "results/endowus_systematic_tactical_monthly_metrics.csv", index=False
+                os.path.join(results_dir, "endowus_systematic_tactical_monthly_metrics.csv"), index=False
             )
 
     curves_df = pd.DataFrame(curves).ffill()
-    curves_df.to_csv("results/endowus_systematic_equity_curves.csv")
+    curves_df.to_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
 
-    save_raw_weights_logs(weights_logs, output_dir="results/weights_raw")
+    save_raw_weights_logs(weights_logs, output_dir=os.path.join(results_dir, "weights_raw"))
     save_diagnostics_events(
         endowus_like_diagnostics,
-        output_dir="results/diagnostics",
+        output_dir=os.path.join(results_dir, "diagnostics"),
         file_name="endowus_engine_llm_diagnostics.csv",
     )
     save_diagnostics_events(
         llm_banded_weekly_diagnostics,
-        output_dir="results/diagnostics",
+        output_dir=os.path.join(results_dir, "diagnostics"),
         file_name="systematic_llm_banded_weekly_diagnostics.csv",
     )
     save_diagnostics_events(
         llm_banded_monthly_diagnostics,
-        output_dir="results/diagnostics",
+        output_dir=os.path.join(results_dir, "diagnostics"),
         file_name="systematic_llm_banded_monthly_diagnostics.csv",
     )
     save_diagnostics_events(
         llm_banded_weekly_diagnostics + llm_banded_monthly_diagnostics,
-        output_dir="results/diagnostics",
+        output_dir=os.path.join(results_dir, "diagnostics"),
         file_name="systematic_llm_banded_diagnostics.csv",
     )
 
-    plot_combined_curves(curves_df)
-    plot_composition_comparison(weights_logs)
-    plot_asset_class_allocation_comparison(weights_logs)
+    plot_combined_curves(curves_df, output_path=os.path.join(results_dir, "endowus_systematic_comparison_plot.png"))
+    plot_composition_comparison(weights_logs, output_path=os.path.join(results_dir, "endowus_systematic_composition_comparison.png"))
+    plot_asset_class_allocation_comparison(weights_logs, output_path=os.path.join(results_dir, "endowus_systematic_asset_class_allocation.png"))
 
     # Plot individual Endowus tickers over the same common timeframe
     start_date = (
         common_start if common_start is not None else pd.to_datetime(START_DATE)
     )
     plot_individual_ticker_growth(
-        daily_close, list(ENDOWUS_WEIGHTS.keys()), start_date, END_DATE
+        daily_close, list(ENDOWUS_WEIGHTS.keys()), start_date, END_DATE,
+        output_path=os.path.join(results_dir, "endowus_individual_tickers.png")
     )
 
     generate_full_period_markdown_report(
         summary_df=summary,
         curves_df=curves_df,
-        output_dir="results",
-        combined_plot_path="results/endowus_systematic_comparison_plot.png",
-        composition_plot_path="results/endowus_systematic_composition_comparison.png",
-        asset_class_plot_path="results/endowus_systematic_asset_class_allocation.png",
-        tickers_plot_path="results/endowus_individual_tickers.png",
+        output_dir=results_dir,
+        combined_plot_path=os.path.join(results_dir, "endowus_systematic_comparison_plot.png"),
+        composition_plot_path=os.path.join(results_dir, "endowus_systematic_composition_comparison.png"),
+        asset_class_plot_path=os.path.join(results_dir, "endowus_systematic_asset_class_allocation.png"),
+        tickers_plot_path=os.path.join(results_dir, "endowus_individual_tickers.png"),
     )
 
-    print("Backtest complete. Results saved to results/ folder.")
+    print(f"Backtest complete. Results saved to {results_dir}/ folder.")
 
 
 if __name__ == "__main__":

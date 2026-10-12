@@ -5,8 +5,9 @@ import glob
 import json
 import os
 import matplotlib.pyplot as plt
+import argparse
 
-def run_rank_ic():
+def run_rank_ic(signals_prefix="results_endowus_"):
     print("--- 1. Cross-Sectional Information Coefficient (Rank IC) ---")
     
     models = ['A', 'B', 'C', 'D']
@@ -27,7 +28,7 @@ def run_rank_ic():
     report_text += "|-------|--------------|-------------------|--------|---------|\n"
 
     for model in models:
-        files = glob.glob(f"results_endowus_{model}/*_decisions.csv")
+        files = glob.glob(f"{signals_prefix}{model}/*_decisions.csv")
         if not files:
             continue
             
@@ -97,7 +98,7 @@ def run_rank_ic():
             
     return report_text
 
-def run_sub_asset_attribution():
+def run_sub_asset_attribution(results_dir="results"):
     print("\n--- 2. Sub-Asset Selection Attribution ---")
     
     try:
@@ -107,7 +108,7 @@ def run_sub_asset_attribution():
         return ""
         
     portfolio_name = "LLM-BL-A-Monthly-Banded"
-    weights_path = f"results/weights_raw/{portfolio_name}_raw_weights.csv"
+    weights_path = os.path.join(results_dir, f"weights_raw/{portfolio_name}_raw_weights.csv")
     
     if not os.path.exists(weights_path):
         print(f"Weights file not found: {weights_path}")
@@ -131,7 +132,7 @@ def run_sub_asset_attribution():
     w_monthly = w_monthly.loc[common_idx]
     df_ret = df_ret.loc[common_idx]
     
-    df_curves = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    df_curves = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df_curves['Unnamed: 0'] = pd.to_datetime(df_curves['Unnamed: 0'])
     df_curves.set_index('Unnamed: 0', inplace=True)
     df_curves_m = df_curves.resample('ME').last()
@@ -219,10 +220,36 @@ def run_sub_asset_attribution():
     return report
 
 if __name__ == '__main__':
-    r1 = run_rank_ic()
-    r2 = run_sub_asset_attribution()
+    parser = argparse.ArgumentParser(description="Run Rank IC and sub-asset attribution")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="glm4",
+        help="Model prefix (e.g. glm4 or gpt54)"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Override output results directory"
+    )
+    args = parser.parse_args()
+
+    if args.results_dir is None:
+        results_dir = "results" if args.model == "glm4" else f"results_{args.model}"
+    else:
+        results_dir = args.results_dir
+
+    signals_prefix = "results_endowus_" if args.model == "glm4" else f"{args.model}_endowus_"
+
+    print(f"Running Rank IC and Sub-asset attribution for model={args.model} | Signals={signals_prefix}* | Results={results_dir}")
+    os.makedirs(results_dir, exist_ok=True)
+
+    r1 = run_rank_ic(signals_prefix)
+    r2 = run_sub_asset_attribution(results_dir)
     
     res = "# LLM Rank IC and Sub-Asset Attribution\n" + r1 + r2
-    with open("results/ic_and_sub_attribution_report.md", "w") as f:
+    report_path = os.path.join(results_dir, "ic_and_sub_attribution_report.md")
+    with open(report_path, "w") as f:
         f.write(res)
-    print("\nReport written to results/ic_and_sub_attribution_report.md")
+    print(f"\nReport written to {report_path}")

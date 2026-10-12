@@ -3,6 +3,7 @@ import numpy as np
 import scipy.stats
 import statsmodels.api as sm
 import os
+import argparse
 
 EVENTS = {
     "COVID-19 Crash & Rebound": ("2020-02-01", "2020-05-31"),
@@ -72,8 +73,8 @@ def run_cvar_bootstrap(r_p, r_m, n_samples=10000, alpha=0.05):
     
     return cvar_p, cvar_m, prob_better
 
-def run_sleeve_test(portfolio_name, df_ret_monthly_all_assets, sleeve_assets):
-    weights_path = f"results/weights_raw/{portfolio_name}_raw_weights.csv"
+def run_sleeve_test(portfolio_name, df_ret_monthly_all_assets, sleeve_assets, results_dir="results"):
+    weights_path = os.path.join(results_dir, f"weights_raw/{portfolio_name}_raw_weights.csv")
     if not os.path.exists(weights_path):
         return None, None, None
         
@@ -155,8 +156,28 @@ def run_car_test(df_daily, port_name, bench_name="Endowus-60/40"):
     return mean_car, res.pvalue
 
 def main():
-    print("Loading data...")
-    df = pd.read_csv("results/endowus_systematic_equity_curves.csv")
+    parser = argparse.ArgumentParser(description="Run advanced statistical tests")
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="glm4",
+        help="Model prefix (e.g. glm4 or gpt54)"
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Override output results directory"
+    )
+    args = parser.parse_args()
+
+    if args.results_dir is None:
+        results_dir = "results" if args.model == "glm4" else f"results_{args.model}"
+    else:
+        results_dir = args.results_dir
+
+    print(f"Loading data from {results_dir}...")
+    df = pd.read_csv(os.path.join(results_dir, "endowus_systematic_equity_curves.csv"))
     df['Unnamed: 0'] = pd.to_datetime(df['Unnamed: 0'])
     df.set_index('Unnamed: 0', inplace=True)
     
@@ -195,8 +216,8 @@ def main():
         
         # 3. Sleeve-Level Alpha (Equity & Fixed Income paired t-tests)
         if not df_ret_monthly_all.empty:
-            eq_mean, eq_t, eq_pval = run_sleeve_test(p, df_ret_monthly_all, EQUITY_ASSETS)
-            fi_mean, fi_t, fi_pval = run_sleeve_test(p, df_ret_monthly_all, FIXED_INCOME_ASSETS)
+            eq_mean, eq_t, eq_pval = run_sleeve_test(p, df_ret_monthly_all, EQUITY_ASSETS, results_dir=results_dir)
+            fi_mean, fi_t, fi_pval = run_sleeve_test(p, df_ret_monthly_all, FIXED_INCOME_ASSETS, results_dir=results_dir)
         else:
             eq_mean, eq_t, eq_pval = None, None, None
             fi_mean, fi_t, fi_pval = None, None, None
@@ -272,9 +293,10 @@ def main():
     tbl4['Crisis CAR p-val'] = tbl4['Crisis CAR p-val'].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
     report += tbl4.to_markdown(index=False) + "\n\n"
     
-    with open("results/advanced_significance_tests.md", "w") as f:
+    with open(os.path.join(results_dir, "advanced_significance_tests.md"), "w") as f:
         f.write(report)
-    print("Done! Check results/advanced_significance_tests.md")
+    print(f"Done! Check {results_dir}/advanced_significance_tests.md")
+
 
 if __name__ == "__main__":
     main()
