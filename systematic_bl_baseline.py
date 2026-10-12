@@ -44,7 +44,7 @@ OPTIMIZER_CHOICES = ("max-sharpe", "max-quadratic-utility", "min-volatility")
 # distribution. `flat` halves the slope.
 OMEGA_MODE = "baseline"
 OMEGA_SEED = 0
-OMEGA_CHOICES = ("baseline", "constant", "shuffled", "flat")
+OMEGA_CHOICES = ("baseline", "constant", "shuffled", "flat", "oracle")
 OMEGA_CONSTANT_SCALE = 0.6
 
 # Endowus Flagship Target Weights
@@ -217,6 +217,36 @@ def shuffle_confidences_by_date(signals: pd.DataFrame, seed: int) -> pd.DataFram
             continue
         vals = out.loc[idx, "confidence"].to_numpy()
         out.loc[idx, "confidence"] = rng.permutation(vals)
+    return out
+
+
+def oracle_confidences(signals: pd.DataFrame, daily_close: pd.DataFrame) -> pd.DataFrame:
+    """Positive control: confidence 10 when the view's sign matches the realised
+    30-calendar-day forward return from the decision date, 1 otherwise.
+
+    Uses future prices by design. It shows what Sharpe the confidence channel
+    could deliver through the published map if confidence were perfectly
+    informative about direction, so a null from the permutation test can be
+    read against a known-informative signal.
+    """
+    if signals is None or signals.empty:
+        return signals
+    out = signals.copy()
+    close = daily_close.sort_index().ffill()
+    confs = []
+    for _, row in out.iterrows():
+        t, d, v = row["Ticker"], pd.to_datetime(row["Date"]), row["target_return"]
+        if t not in close.columns or pd.isna(v):
+            confs.append(row["confidence"])
+            continue
+        s = close[t].dropna()
+        p0 = s.asof(d)
+        p1 = s.asof(d + pd.Timedelta(days=30))
+        if pd.isna(p0) or pd.isna(p1) or d + pd.Timedelta(days=30) > s.index[-1]:
+            confs.append(row["confidence"])
+            continue
+        confs.append(10.0 if np.sign(v) == np.sign(p1 / p0 - 1.0) else 1.0)
+    out["confidence"] = confs
     return out
 
 
@@ -2733,7 +2763,8 @@ def main():
         help=(
             "Confidence->Omega mapping ablation: baseline (1.1-c/10), "
             "constant (confidence-blind), shuffled (permute confidences within "
-            "each date), flat (halved slope)"
+            "each date), flat (halved slope), oracle (positive control: 10 if "
+            "the view's sign matches the realised 30-day return, else 1)"
         ),
     )
     parser.add_argument(
@@ -2834,6 +2865,13 @@ def main():
         signals_B = shuffle_confidences_by_date(signals_B, OMEGA_SEED + 1)
         signals_C = shuffle_confidences_by_date(signals_C, OMEGA_SEED + 2)
         signals_D = shuffle_confidences_by_date(signals_D, OMEGA_SEED + 3)
+
+    if OMEGA_MODE == "oracle":
+        print("Omega ablation: oracle confidences (positive control, uses future prices)")
+        signals_A = oracle_confidences(signals_A, daily_close)
+        signals_B = oracle_confidences(signals_B, daily_close)
+        signals_C = oracle_confidences(signals_C, daily_close)
+        signals_D = oracle_confidences(signals_D, daily_close)
 
     signals_A_monthly = align_signals_to_month_end(signals_A)
     signals_B_monthly = align_signals_to_month_end(signals_B)
